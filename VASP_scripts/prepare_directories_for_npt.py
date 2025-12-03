@@ -63,7 +63,7 @@ DEFAULT_PARAMS = {
     "ISIF": "3",
     "EDIFF": "1E-5",
     "PREC": "Normal",
-    "ALGO": "Fast",
+    "ALGO": "Very Fast",
     "NELM": "1000",
     "SIGMA": "0.05"
 }
@@ -528,6 +528,10 @@ class VASPNPTProcessor:
                 'LPLANE': '.TRUE.',
                 'LSCALU': '.FALSE.'
             })
+            
+            # Ensure ALGO and PREC are set correctly (override any existing values)
+            all_params['ALGO'] = 'Very Fast'
+            all_params['PREC'] = 'Normal'
             
             # Write INCAR file with organized sections
             with open(incar_path, 'w') as f:
