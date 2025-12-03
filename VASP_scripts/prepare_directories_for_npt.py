@@ -19,7 +19,8 @@ This comprehensive script combines three major functionalities:
 
 3. Parallelization Optimization (from optimize_vasp_incar.py):
    - Analyzes system size and k-point density
-   - Calculates optimal NCORE, NPAR, KPAR, NSIM parameters
+   - Calculates optimal NCORE, NPAR, NSIM parameters
+   - Note: KPAR is not calculated and will be removed from INCAR if present
    - Supports multiple cluster configurations
    - Ensures proper core utilization
 
@@ -343,6 +344,10 @@ class VASPNPTProcessor:
                         key = parts[0].strip()
                         value_str = parts[1].strip()
                         
+                        # Skip KPAR - remove it if found
+                        if key.upper() == 'KPAR':
+                            continue
+                        
                         # Handle different value types
                         try:
                             # Try integer first
@@ -424,33 +429,34 @@ class VASPNPTProcessor:
             system_size = "large"
         
         # Calculate optimal parameters based on system size and k-point density
+        # Note: KPAR calculation is disabled - KPAR will be removed from INCAR if present
         if system_size == "small":
             if kpoints >= 64:
-                optimal_kpar = min(8, kpoints // 8)
+                # optimal_kpar = min(8, kpoints // 8)  # KPAR calculation disabled
                 optimal_ncore = min(8, total_cores // 2)
                 optimal_npar = total_cores // optimal_ncore
             else:
-                optimal_kpar = min(4, kpoints // 4)
+                # optimal_kpar = min(4, kpoints // 4)  # KPAR calculation disabled
                 optimal_ncore = min(4, total_cores // 4)
                 optimal_npar = total_cores // optimal_ncore
                 
         elif system_size == "medium":
             if kpoints >= 64:
-                optimal_kpar = min(8, kpoints // 8)
+                # optimal_kpar = min(8, kpoints // 8)  # KPAR calculation disabled
                 optimal_ncore = min(4, total_cores // 4)
                 optimal_npar = total_cores // optimal_ncore
             else:
-                optimal_kpar = min(4, kpoints // 4)
+                # optimal_kpar = min(4, kpoints // 4)  # KPAR calculation disabled
                 optimal_ncore = min(4, total_cores // 4)
                 optimal_npar = total_cores // optimal_ncore
                 
         else:  # large systems
             if kpoints >= 64:
-                optimal_kpar = min(4, kpoints // 16)
+                # optimal_kpar = min(4, kpoints // 16)  # KPAR calculation disabled
                 optimal_ncore = min(2, total_cores // 8)
                 optimal_npar = total_cores // optimal_ncore
             else:
-                optimal_kpar = min(2, kpoints // 9)
+                # optimal_kpar = min(2, kpoints // 9)  # KPAR calculation disabled
                 optimal_ncore = min(2, total_cores // 8)
                 optimal_npar = total_cores // optimal_ncore
         
@@ -463,18 +469,18 @@ class VASPNPTProcessor:
             if optimal_ncore * optimal_npar != total_cores:
                 self.log(f"Warning: Could not achieve exact core matching for {atoms} atoms", "WARNING")
         
-        # Ensure KPAR doesn't exceed k-points
-        optimal_kpar = min(optimal_kpar, kpoints)
+        # KPAR calculation and validation disabled
+        # optimal_kpar = min(optimal_kpar, kpoints)
         
         # Ensure all parameters are reasonable
         optimal_ncore = max(1, min(optimal_ncore, self.cluster_config.max_ncore))
         optimal_npar = max(1, optimal_npar)
-        optimal_kpar = max(1, optimal_kpar)
+        # optimal_kpar = max(1, optimal_kpar)  # KPAR validation disabled
         
         return {
             'ncore': optimal_ncore,
             'npar': optimal_npar,
-            'kpar': optimal_kpar,
+            # 'kpar': optimal_kpar,  # KPAR not returned
             'nsim': optimal_nsim
         }
     
@@ -490,6 +496,10 @@ class VASPNPTProcessor:
         try:
             # Prepare all parameters
             all_params = params.copy()
+            
+            # Remove KPAR if present (KPAR is not used)
+            if 'KPAR' in all_params:
+                del all_params['KPAR']
             
             # Add temperature parameters
             all_params['TEBEG'] = temp
@@ -513,7 +523,7 @@ class VASPNPTProcessor:
             all_params.update({
                 'NCORE': parallelization_params['ncore'],
                 'NPAR': parallelization_params['npar'],
-                'KPAR': parallelization_params['kpar'],
+                # 'KPAR': parallelization_params['kpar'],  # KPAR not written
                 'NSIM': parallelization_params['nsim'],
                 'LPLANE': '.TRUE.',
                 'LSCALU': '.FALSE.'
@@ -558,7 +568,7 @@ class VASPNPTProcessor:
                 
                 # Parallelization flags
                 f.write("Parallelization flags:\n")
-                parallelization_keys = ['NCORE', 'NPAR', 'KPAR', 'NSIM', 'LPLANE', 'LSCALU']
+                parallelization_keys = ['NCORE', 'NPAR', 'NSIM', 'LPLANE', 'LSCALU']  # KPAR removed
                 for key in parallelization_keys:
                     if key in all_params:
                         f.write(f"{key} = {all_params[key]}\n")
@@ -623,7 +633,7 @@ class VASPNPTProcessor:
             lattice=lattice,
             optimal_ncore=parallelization_params['ncore'],
             optimal_npar=parallelization_params['npar'],
-            optimal_kpar=parallelization_params['kpar'],
+            optimal_kpar=None,  # KPAR not calculated
             optimal_nsim=parallelization_params['nsim']
         )
         
