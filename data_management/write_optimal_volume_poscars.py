@@ -424,77 +424,180 @@ class OptimalVolumePOSCARWriter:
         
         return None
     
+    def find_all_poscars_for_compound(self, compound, search_dir=None):
+        """
+        Find all POSCAR files for a compound in the output directory.
+        
+        Parameters:
+        -----------
+        compound : str
+            Compound name
+        search_dir : Path, optional
+            Directory to search in. If None, uses output_dir.
+            
+        Returns:
+        --------
+        list : List of Path objects to POSCAR files
+        """
+        if search_dir is None:
+            search_dir = self.output_dir
+        
+        # Look for POSCAR files in the compound directory
+        poscar_files = []
+        
+        # Check if output_dir has base_dir structure
+        base_name = self.base_dir.name
+        potential_subdir = search_dir / base_name
+        if potential_subdir.exists() and potential_subdir.is_dir():
+            search_base = potential_subdir
+        else:
+            search_base = search_dir
+        
+        # Find all POSCAR files in compound directories
+        compound_dirs = list(search_base.rglob(f'*/{compound}/V_*'))
+        
+        for dir_path in compound_dirs:
+            poscar_path = dir_path / 'POSCAR'
+            if poscar_path.exists():
+                poscar_files.append(poscar_path)
+        
+        return sorted(poscar_files)
+    
+    def extract_volume_percentage_from_path(self, poscar_path):
+        """
+        Extract volume percentage from POSCAR path (e.g., V_+02.5% -> 2.5).
+        
+        Parameters:
+        -----------
+        poscar_path : Path
+            Path to POSCAR file
+            
+        Returns:
+        --------
+        float or None : Volume percentage, or None if not found
+        """
+        parts = poscar_path.parts
+        for part in parts:
+            vol_match = re.search(r'V_([+-]?[\d.]+)%', part)
+            if vol_match:
+                return float(vol_match.group(1))
+        return None
+    
     def write_optimal_poscars(self):
-        """Write POSCAR files with optimal volumes for all compounds."""
+        """
+        Write POSCAR files with optimal volumes.
+        
+        Strategy:
+        1. Set V_+00.0% directories to optimal volume (reference)
+        2. Scale all other V_ directories relative to optimal volume based on their names
+        """
         print("Writing POSCAR files with optimal volumes...")
         print("="*100)
         
         written_files = []
         
         for compound, optimal_volume in sorted(self.optimal_volumes.items()):
-            # Find reference POSCAR
+            # Find reference POSCAR from base_dir (to get structure)
             ref_poscar = self.find_reference_poscar(compound)
             
             if not ref_poscar:
                 print(f"  {compound:<25} SKIPPED (no reference POSCAR found)")
                 continue
             
+            # Find ALL POSCAR files for this compound in output directory
+            output_poscars = self.find_all_poscars_for_compound(compound)
+            
+            if not output_poscars:
+                print(f"  {compound:<25} SKIPPED (no POSCAR files found in output directory)")
+                continue
+            
             try:
-                # Read POSCAR
-                poscar_data = self.read_poscar(ref_poscar)
+                # Read reference POSCAR to get structure
+                ref_poscar_data = self.read_poscar(ref_poscar)
                 
-                # Calculate current volume
-                current_volume = self.calculate_volume_from_lattice(
-                    poscar_data['lattice'], 
-                    poscar_data['scaling']
+                # Calculate reference volume
+                ref_volume = self.calculate_volume_from_lattice(
+                    ref_poscar_data['lattice'], 
+                    ref_poscar_data['scaling']
                 )
                 
-                # Scale to optimal volume
-                scaled_lattice, new_scaling = self.scale_lattice_to_volume(
-                    poscar_data['lattice'],
-                    poscar_data['scaling'],
-                    optimal_volume
-                )
+                # Separate V_+00.0% from other directories
+                v0_poscars = []
+                other_poscars = []
                 
-                # Update POSCAR data
-                poscar_data['lattice'] = scaled_lattice
-                poscar_data['scaling'] = new_scaling
-                
-                # Verify new volume
-                new_volume = self.calculate_volume_from_lattice(scaled_lattice, new_scaling)
-                
-                # Determine output path (overwrite original POSCAR)
-                if self.output_dir != self.base_dir:
-                    # If output directory is different, preserve directory structure there
-                    rel_path = ref_poscar.relative_to(self.base_dir)
-                    
-                    # Check if output_dir already contains base_dir name as subdirectory
-                    base_name = self.base_dir.name
-                    potential_subdir = self.output_dir / base_name
-                    if potential_subdir.exists() and potential_subdir.is_dir():
-                        # Output dir already has base_dir structure, use it
-                        output_path = potential_subdir / rel_path
+                for poscar_path in output_poscars:
+                    vol_pct = self.extract_volume_percentage_from_path(poscar_path)
+                    if vol_pct is not None and abs(vol_pct) < 0.01:  # V_+00.0% or V_-00.0%
+                        v0_poscars.append(poscar_path)
                     else:
-                        # Normal case: write directly to output_dir
-                        output_path = self.output_dir / rel_path
-                else:
-                    # Overwrite original POSCAR
-                    output_path = ref_poscar
+                        other_poscars.append((poscar_path, vol_pct))
                 
-                # Create output directory if needed
-                output_path.parent.mkdir(parents=True, exist_ok=True)
+                # Step 1: Set V_+00.0% directories to optimal volume
+                scale_factor_to_optimal = (optimal_volume / ref_volume) ** (1/3)
                 
-                # Write POSCAR (overwrites existing file)
-                self.write_poscar(poscar_data, output_path)
+                for poscar_path in v0_poscars:
+                    try:
+                        poscar_data = self.read_poscar(poscar_path)
+                        
+                        # Scale to optimal volume
+                        scaled_lattice = poscar_data['lattice'] * scale_factor_to_optimal
+                        poscar_data['lattice'] = scaled_lattice
+                        poscar_data['scaling'] = 1.0
+                        
+                        # Write POSCAR
+                        self.write_poscar(poscar_data, poscar_path)
+                        written_files.append(str(poscar_path))
+                        
+                    except Exception as e:
+                        print(f"    ERROR processing {poscar_path.name}: {e}")
                 
-                written_files.append(str(output_path))
-                print(f"  {compound:<25} {current_volume:>8.3f} → {optimal_volume:>8.3f} Å³  ({output_path})")
+                # Step 2: Scale other V_ directories relative to optimal volume
+                for poscar_path, vol_pct in other_poscars:
+                    try:
+                        if vol_pct is None:
+                            continue
+                        
+                        # Calculate target volume: optimal_volume * (1 + vol_pct/100)
+                        target_volume = optimal_volume * (1.0 + vol_pct / 100.0)
+                        
+                        # Read POSCAR
+                        poscar_data = self.read_poscar(poscar_path)
+                        
+                        # Calculate current volume
+                        current_volume = self.calculate_volume_from_lattice(
+                            poscar_data['lattice'], 
+                            poscar_data['scaling']
+                        )
+                        
+                        # Scale to target volume
+                        scale_factor = (target_volume / current_volume) ** (1/3)
+                        scaled_lattice = poscar_data['lattice'] * scale_factor
+                        poscar_data['lattice'] = scaled_lattice
+                        poscar_data['scaling'] = 1.0
+                        
+                        # Verify new volume
+                        new_volume = self.calculate_volume_from_lattice(scaled_lattice, 1.0)
+                        
+                        # Write POSCAR
+                        self.write_poscar(poscar_data, poscar_path)
+                        written_files.append(str(poscar_path))
+                        
+                    except Exception as e:
+                        print(f"    ERROR processing {poscar_path.name}: {e}")
+                
+                # Summary for this compound
+                n_v0 = len(v0_poscars)
+                n_other = len(other_poscars)
+                vol_info = f"V₀={optimal_volume:>8.3f} Å³"
+                print(f"  {compound:<25} {vol_info}  (V_+00.0%: {n_v0}, others: {n_other})")
                 
             except Exception as e:
                 print(f"  {compound:<25} ERROR: {e}")
         
         print("="*100)
         print(f"\nSuccessfully wrote {len(written_files)} POSCAR file(s)")
+        print("\nNote: V_+00.0% directories set to optimal volume (reference)")
+        print("      Other V_ directories scaled relative to optimal volume")
         
         return written_files
 
