@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Bulk Modulus Analysis Script for VASP Calculations
+Bulk Modulus Analysis Script for VASP Calculations - Individual Phase Plots
 
 This script analyzes bulk modulus calculations from VASP OUTCAR files.
 It extracts volume and energy data, fits to Birch-Murnaghan EOS,
-and generates comprehensive plots.
+and generates separate plots for each phase in individual X11 windows.
 
 Key Parameters:
 - B0: Bulk modulus (GPa)
@@ -16,6 +16,8 @@ Key Parameters:
 import os
 import re
 import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for separate X11 windows
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from pathlib import Path
@@ -296,171 +298,139 @@ class BulkModulusAnalyzer:
             print(f"Error fitting EOS: {e}")
             return None
     
-    def plot_all_compounds(self):
-        """Plot all compounds on a single Energy vs Volume plot with EOS fits.
+    def plot_individual_compound(self, compound, data):
+        """
+        Plot a single compound in its own window with EOS fit.
+        Energies are normalized (shifted) so the minimum energy is at 0 eV.
+        All data is plotted without removing any outliers.
+        
+        Parameters:
+        -----------
+        compound : str
+            Name of the compound/phase
+        data : dict
+            Dictionary containing volume and energy data for the compound
+        """
+        vol_pcts = sorted(data.keys())
+        volumes = np.array([data[v]['volume'] for v in vol_pcts])
+        energies = np.array([data[v]['energy'] for v in vol_pcts])
+        
+        # Create a new figure for this compound
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Fit EOS to get E0 (equilibrium energy)
+        fit_result = self.fit_eos(volumes, energies)
+        
+        if fit_result:
+            E0 = fit_result['E0']
+            energies_normalized = energies - E0
+            
+            # Generate fitted curve
+            V_fit = np.linspace(volumes.min() * 0.95, volumes.max() * 1.05, 200)
+            E_fit = self.birch_murnaghan_eos(V_fit, *fit_result['popt'])
+            E_fit_normalized = E_fit - E0
+            
+            # Plot normalized fitted curve
+            ax.plot(V_fit, E_fit_normalized, '-', linewidth=2.5, color='blue', 
+                   alpha=0.8, zorder=2, label='Birch-Murnaghan EOS fit')
+            
+            # Calculate y-axis limits
+            y_min = np.min(energies_normalized)
+            y_max = np.max(energies_normalized)
+            y_range = max(abs(y_min), abs(y_max))
+            y_limit = y_range * 1.15  # Add 15% padding
+            
+            # Plot normalized data points
+            ax.scatter(volumes, energies_normalized, s=100, alpha=0.8, 
+                      color='red', zorder=3, edgecolors='black', 
+                      linewidths=1.5, label='Data points')
+            
+            # Add text box with fit parameters
+            fit_text = (
+                f'B₀ = {fit_result["B0_GPa"]:.2f} ± {fit_result["B0_err"]:.2f} GPa\n'
+                f'V₀ = {fit_result["V0"]:.2f} ± {fit_result["V0_err"]:.2f} Å³\n'
+                f"B₀' = {fit_result['B0_prime']:.2f} ± {fit_result['B0_prime_err']:.2f}\n"
+                f'E₀ = {fit_result["E0"]:.2f} ± {fit_result["E0_err"]:.2f} eV\n'
+                f'R² = {fit_result["r_squared"]:.4f}\n'
+                f'N = {len(volumes)} points'
+            )
+            
+            print(f"  '{compound}': {len(volumes)} points, B₀ = {fit_result['B0_GPa']:.2f} ± {fit_result['B0_err']:.2f} GPa, R² = {fit_result['r_squared']:.4f}")
+        else:
+            # If fit failed, just normalize by minimum energy
+            E0 = np.min(energies)
+            energies_normalized = energies - E0
+            
+            # Calculate y-axis limits
+            y_min = np.min(energies_normalized)
+            y_max = np.max(energies_normalized)
+            y_range = max(abs(y_min), abs(y_max))
+            y_limit = y_range * 1.15  # Add 15% padding
+            
+            # Plot normalized data points only
+            ax.scatter(volumes, energies_normalized, s=120, alpha=0.8, 
+                      color='red', zorder=3, edgecolors='black', 
+                      linewidths=1.5, marker='s', label='Data points')
+            
+            fit_text = (
+                f'EOS fit failed\n'
+                f'N = {len(volumes)} points\n'
+                f'(Need at least 4 points for fit)'
+            )
+            
+            print(f"  '{compound}': {len(volumes)} points, EOS fit failed (insufficient points or fit error)")
+        
+        # Set y-axis limits (symmetric around zero)
+        ax.set_ylim(-y_limit, y_limit)
+        
+        # Set labels and title
+        ax.set_xlabel('Volume (Å³)', fontsize=14)
+        ax.set_ylabel('Energy - E₀ (eV)', fontsize=14)
+        ax.set_title(f'Bulk Modulus: {compound}\nNormalized Energy vs Volume', 
+                    fontsize=16, fontweight='bold')
+        ax.legend(fontsize=11, loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
+        
+        # Add text annotation with fit parameters
+        ax.text(0.02, 0.98, fit_text, 
+               transform=ax.transAxes, fontsize=10, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+               family='monospace')
+        
+        plt.tight_layout()
+        
+        # Set window title
+        fig.canvas.manager.set_window_title(f'Bulk Modulus: {compound}')
+        
+        # Show the plot in a separate window (non-blocking)
+        plt.show(block=False)
+        
+        return fig
+    
+    def plot_all_compounds_individual(self):
+        """
+        Plot each compound individually in separate X11 windows.
         Energies are normalized (shifted) so each compound's minimum energy is at 0 eV.
-        Outliers are automatically detected and excluded from y-axis scaling.
+        All data is plotted without removing any outliers.
         """
         if not self.data:
             print("No data to plot")
             return
         
-        n_compounds = len(self.data)
-        fig, ax = plt.subplots(figsize=(14, 10))
+        print(f"\nPlotting {len(self.data)} compound(s) in separate windows:")
         
-        # Generate colors for each compound
-        colors = plt.cm.tab20(np.linspace(0, 1, n_compounds))
+        # Plot each compound in its own window
+        for compound, data in self.data.items():
+            self.plot_individual_compound(compound, data)
         
-        # Collect all normalized energies to detect outliers
-        all_normalized_energies = []
-        plot_data = []
-        
-        # First pass: normalize all data and collect statistics
-        for i, (compound, data) in enumerate(self.data.items()):
-            vol_pcts = sorted(data.keys())
-            volumes = np.array([data[v]['volume'] for v in vol_pcts])
-            energies = np.array([data[v]['energy'] for v in vol_pcts])
-            
-            # Fit EOS to get E0 (equilibrium energy)
-            fit_result = self.fit_eos(volumes, energies)
-            
-            if fit_result:
-                E0 = fit_result['E0']
-                energies_normalized = energies - E0
-                all_normalized_energies.extend(energies_normalized.tolist())
-                
-                # Store plot data
-                V_fit = np.linspace(volumes.min() * 0.95, volumes.max() * 1.05, 200)
-                E_fit = self.birch_murnaghan_eos(V_fit, *fit_result['popt'])
-                E_fit_normalized = E_fit - E0
-                
-                plot_data.append({
-                    'compound': compound,
-                    'volumes': volumes,
-                    'energies_norm': energies_normalized,
-                    'V_fit': V_fit,
-                    'E_fit_norm': E_fit_normalized,
-                    'color': colors[i],
-                    'fit_result': fit_result
-                })
-            else:
-                # If fit failed, just normalize by minimum energy
-                E0 = np.min(energies)
-                energies_normalized = energies - E0
-                all_normalized_energies.extend(energies_normalized.tolist())
-                
-                plot_data.append({
-                    'compound': compound,
-                    'volumes': volumes,
-                    'energies_norm': energies_normalized,
-                    'V_fit': None,
-                    'E_fit_norm': None,
-                    'color': colors[i],
-                    'fit_result': None
-                })
-        
-        # Detect outlier compounds by their maximum absolute normalized energy
-        # This better captures compounds with extreme energy variations
-        compound_stats = []
-        for data in plot_data:
-            energies_norm = data['energies_norm']
-            max_abs_energy = np.max(np.abs(energies_norm))
-            energy_range = np.max(energies_norm) - np.min(energies_norm)
-            compound_stats.append({
-                'compound': data['compound'],
-                'max_abs': max_abs_energy,
-                'range': energy_range
-            })
-        
-        # Calculate percentile-based outlier detection using max absolute energy
-        max_abs_array = np.array([c['max_abs'] for c in compound_stats])
-        # Exclude compounds above 85th percentile to catch more outliers
-        outlier_threshold = np.percentile(max_abs_array, 85)
-        
-        # Use aggressive fixed thresholds to catch extreme outliers
-        # Normalized energies for bulk modulus should typically be < 50 eV
-        # Compounds with much larger variations are likely outliers
-        max_abs_threshold = 100.0  # Exclude compounds with max_abs > 100 eV
-        outlier_threshold = min(outlier_threshold, max_abs_threshold)
-        
-        # Also check energy range for outliers
-        range_array = np.array([c['range'] for c in compound_stats])
-        range_threshold = np.percentile(range_array, 85)
-        range_threshold = min(range_threshold, 200.0)  # Exclude compounds with range > 200 eV
-        
-        # Filter out outlier compounds (exclude if exceeds either threshold)
-        filtered_plot_data = []
-        outlier_compounds = []
-        for i, data in enumerate(plot_data):
-            max_abs = compound_stats[i]['max_abs']
-            energy_range = compound_stats[i]['range']
-            if max_abs <= outlier_threshold and energy_range <= range_threshold:
-                filtered_plot_data.append(data)
-            else:
-                outlier_compounds.append(data['compound'])
-        
-        if outlier_compounds:
-            print(f"\nWarning: Excluding outlier compounds from plot: {', '.join(outlier_compounds)}")
-            print(f"  (Energy range threshold: {outlier_threshold:.1f} eV)\n")
-        
-        # Calculate y-axis limits from non-outlier compounds only
-        filtered_energies = []
-        for data in filtered_plot_data:
-            filtered_energies.extend(data['energies_norm'].tolist())
-        
-        if filtered_energies:
-            filtered_energies = np.array(filtered_energies)
-            # Use 95th percentile of filtered data for cleaner view
-            y_range = np.percentile(np.abs(filtered_energies), 95)
-            y_limit = y_range * 1.2  # Add 20% padding
-        else:
-            # Fallback if all compounds are outliers
-            all_normalized_energies = np.array(all_normalized_energies)
-            y_range = np.percentile(np.abs(all_normalized_energies), 95)
-            y_limit = y_range * 1.2
-            filtered_plot_data = plot_data  # Use all data if everything is outlier
-        
-        # Plot each compound (only non-outliers)
-        for data in filtered_plot_data:
-            compound = data['compound']
-            volumes = data['volumes']
-            energies_norm = data['energies_norm']
-            color = data['color']
-            
-            # Plot normalized data points
-            ax.scatter(volumes, energies_norm, s=80, alpha=0.7, 
-                      label=compound, color=color, zorder=3)
-            
-            # Plot normalized fitted curve if available
-            if data['V_fit'] is not None and data['E_fit_norm'] is not None:
-                V_fit = data['V_fit']
-                E_fit_norm = data['E_fit_norm']
-                ax.plot(V_fit, E_fit_norm, '-', linewidth=2, color=color, 
-                       alpha=0.7, zorder=2)
-        
-        # Set y-axis limits to focus on majority of data
-        ax.set_ylim(-y_limit, y_limit)
-        
-        ax.set_xlabel('Volume (Å³)', fontsize=14)
-        ax.set_ylabel('Energy - E₀ (eV)', fontsize=14)
-        title = 'Bulk Modulus: Normalized Energy vs Volume'
-        if outlier_compounds:
-            title += f'\n(Excluded outliers: {", ".join(outlier_compounds)})'
-        ax.set_title(title, fontsize=16, fontweight='bold')
-        ax.legend(fontsize=8, ncol=3, loc='best', framealpha=0.9)
-        ax.grid(True, alpha=0.3)
-        ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
-        
-        # Add text annotation about y-axis limits
-        annotation_text = f'Y-axis range: ±{y_limit:.1f} eV'
-        if outlier_compounds:
-            annotation_text += f'\n({len(outlier_compounds)} outlier(s) excluded)'
-        ax.text(0.02, 0.98, annotation_text, 
-               transform=ax.transAxes, fontsize=9, verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
-        plt.tight_layout()
-        plt.show()
+        # Keep all windows open
+        print("\nAll plots are displayed in separate windows. Close windows manually or press Ctrl+C to exit.")
+        try:
+            plt.show(block=True)  # Block to keep windows open
+        except KeyboardInterrupt:
+            print("\nInterrupted by user. Closing plots...")
+            plt.close('all')
     
     def generate_summary_table(self):
         """Generate a summary table of all fitted parameters."""
@@ -504,7 +474,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Analyze bulk modulus calculations from VASP OUTCAR files'
+        description='Analyze bulk modulus calculations from VASP OUTCAR files - individual phase plots in separate X11 windows'
     )
     parser.add_argument(
         'base_dir',
@@ -527,8 +497,8 @@ def main():
     # Generate summary
     analyzer.generate_summary_table()
     
-    # Plot all compounds on single plot
-    analyzer.plot_all_compounds()
+    # Plot each compound individually in separate windows
+    analyzer.plot_all_compounds_individual()
 
 
 if __name__ == '__main__':
