@@ -1,0 +1,116 @@
+run:
+- train
+- val
+cutoff_radius: 5.0
+chemical_symbols:
+- K
+- Mn
+- O
+model_type_names: ${chemical_symbols}
+monitored_metric: val0_epoch/weighted_sum
+data:
+  _target_: nequip.data.datamodule.NequIPDataModule
+  seed: 6699
+  split_dataset:
+    dataset:
+      _target_: nequip.data.dataset.ASEDataset
+      file_path: final_frames.xyz
+      include_keys:
+      - REF_energy
+      - REF_forces
+      key_mapping:
+        REF_energy: total_energy
+        REF_forces: forces
+      transforms:
+      - _target_: nequip.data.transforms.NeighborListTransform
+        r_max: ${cutoff_radius}
+      - _target_: nequip.data.transforms.ChemicalSpeciesToAtomTypeMapper
+        chemical_symbols: ${chemical_symbols}
+    train: 0.95
+    val: 0.05
+  train_dataloader:
+    _target_: torch.utils.data.DataLoader
+    batch_size: 1
+    shuffle: true
+  val_dataloader:
+    _target_: torch.utils.data.DataLoader
+    batch_size: 1
+  test_dataloader: ${data.val_dataloader}
+  stats_manager:
+    _target_: nequip.data.CommonDataStatisticsManager
+    type_names: ${model_type_names}
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 500
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 1
+  accelerator: gpu
+  devices: 4
+  callbacks:
+  - _target_: nequip.train.callbacks.SoftAdapt
+    beta: 1.0
+    interval: epoch
+    frequency: 2
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: ${monitored_metric}
+    dirpath: models
+    filename: best
+    save_last: true
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+  logger:
+    _target_: lightning.pytorch.loggers.CSVLogger
+    name: cohs
+    save_dir: logs
+  strategy: ddp
+num_scalar_features: 64
+training_module:
+  _target_: nequip.train.EMALightningModule
+  loss:
+    _target_: nequip.train.EnergyForceLoss
+    per_atom_energy: true
+    coeffs:
+      total_energy: 1.0
+      forces: 10.0
+  val_metrics:
+    _target_: nequip.train.EnergyForceMetrics
+    coeffs:
+      per_atom_energy_mae: 1.0
+      forces_mae: 1.0
+  test_metrics: ${training_module.val_metrics}
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.001
+  model:
+    _target_: allegro.model.AllegroModel
+    seed: 456
+    model_dtype: float64
+    type_names: ${model_type_names}
+    r_max: ${cutoff_radius}
+    radial_chemical_embed:
+      _target_: allegro.nn.TwoBodyBesselScalarEmbed
+      num_bessels: 8
+      bessel_trainable: false
+      polynomial_cutoff_p: 6
+    radial_chemical_embed_dim: ${num_scalar_features}
+    scalar_embed_mlp_hidden_layers_depth: 1
+    scalar_embed_mlp_hidden_layers_width: ${num_scalar_features}
+    scalar_embed_mlp_nonlinearity: silu
+    l_max: 2
+    num_layers: 3
+    num_scalar_features: ${num_scalar_features}
+    num_tensor_features: 64
+    allegro_mlp_hidden_layers_depth: 1
+    allegro_mlp_hidden_layers_width: ${num_scalar_features}
+    allegro_mlp_nonlinearity: silu
+    parity: false
+    tp_path_channel_coupling: true
+    readout_mlp_hidden_layers_depth: 1
+    readout_mlp_hidden_layers_width: ${num_scalar_features}
+    readout_mlp_nonlinearity: silu
+    avg_num_neighbors: ${training_data_stats:num_neighbors_mean}
+    per_type_energy_scales: ${training_data_stats:forces_rms}
+    per_type_energy_scales_trainable: true
+    per_type_energy_shifts_trainable: false
+global_options:
+  allow_tf32: true
