@@ -379,10 +379,14 @@ class VASPNPTProcessor:
         # Calculate average atomic mass
         avg_mass = sum(s.count * s.atomic_mass for s in species_list) / total_atoms
         
-        # Calculate optimal time step based on temperature and atomic masses
-        temp_factor = max(0.5, min(2.0, 300.0 / temperature))
-        mass_factor = max(0.5, min(2.0, 20.0 / avg_mass))
-        optimal_potim = max(0.5, min(2.0, 1.0 * temp_factor * mass_factor))
+        # Calculate optimal time step based on lightest atom
+        # Standard MD timesteps: 0.5 fs if H present, 1.0 fs otherwise (safe default)
+        # 2.0 fs possible for heavy systems but 1.0 fs is safer
+        min_mass = min(s.atomic_mass for s in species_list)
+        if min_mass < 2.0:  # Hydrogen present
+            optimal_potim = 0.5
+        else:
+            optimal_potim = 1.0
         
         # Calculate optimal friction coefficients for each species
         langevin_gamma = []
