@@ -187,10 +187,11 @@ class VASPNPTProcessor:
         'Kr': {'Z': 36, 'mass': 83.798, 'gamma_opt': 3.1},
     }
     
-    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True):
+    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True, nsw: int = 10000):
         """Initialize the processor."""
         self.cluster_config = cluster_config
         self.verbose = verbose
+        self.nsw = nsw  # Default number of MD steps
         self.processed_dirs = []
         self.skipped_dirs = []
         self.systems_analyzed = []
@@ -225,12 +226,15 @@ class VASPNPTProcessor:
             with open(poscar_path, 'r') as f:
                 lines = f.readlines()
             
-            # Read lattice vectors (lines 2-4)
+            # Read scaling factor (line 1)
+            scaling_factor = float(lines[1].strip().split()[0])
+            
+            # Read lattice vectors (lines 2-4) and apply scaling factor
             lattice = np.array([
                 [float(x) for x in lines[2].split()],
                 [float(x) for x in lines[3].split()],
                 [float(x) for x in lines[4].split()]
-            ])
+            ]) * scaling_factor
             
             # Read species and counts (lines 5-6)
             species_line = lines[5].strip().split()
@@ -389,23 +393,24 @@ class VASPNPTProcessor:
             optimal_potim = 1.0
         
         # Calculate optimal friction coefficients for each species
+        # Scale with temperature: higher T may need slightly higher friction for stability
         langevin_gamma = []
         for species in species_list:
             temp_adjustment = max(0.5, min(2.0, temperature / 300.0))
             gamma = species.friction_coefficient * temp_adjustment
             langevin_gamma.append(gamma)
         
-        # Calculate optimal PMASS based on system size and temperature
-        size_factor = max(0.5, min(3.0, total_atoms / 50.0))
-        temp_factor_pmass = max(0.5, min(2.0, temperature / 300.0))
-        optimal_pmass = max(500, min(5000, 1000 * size_factor * temp_factor_pmass))
+        # PMASS: fictitious mass for Parrinello-Rahman barostat
+        # Standard value ~1000 works for most systems
+        optimal_pmass = 1000
         
-        # Calculate optimal LANGEVIN_GAMMA_L based on system properties
-        complexity_factor = max(0.5, min(2.0, total_atoms / 20.0))
-        optimal_gamma_l = max(0.5, min(20.0, 10.0 * complexity_factor))
+        # LANGEVIN_GAMMA_L: friction for lattice degrees of freedom
+        # Standard value ~10 ps^-1, independent of system size
+        optimal_gamma_l = 10.0
         
-        # Determine number of MD steps based on system size and complexity
-        optimal_nsw = max(5000, min(50000, 10000 * size_factor))
+        # NSW: number of MD steps (10000 steps × 1 fs = 10 ps simulation)
+        # Use value from processor (set via --nsw argument) or existing INCAR
+        optimal_nsw = existing_params.get('NSW', self.nsw) if existing_params.get('NSW') else self.nsw
         
         # Create NPT parameters object
         npt_params = NPTParameters(
@@ -803,6 +808,7 @@ Examples:
     parser.add_argument("--cores-per-node", type=int, help="Cores per node (overrides cluster config)")
     parser.add_argument("--nodes", type=int, help="Number of nodes (overrides cluster config)")
     parser.add_argument("--max-ncore", type=int, help="Maximum NCORE value")
+    parser.add_argument("--nsw", type=int, default=10000, help="Number of MD steps (default: 10000)")
     parser.add_argument("--dry-run", action="store_true", help="Analyze only, don't update files")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--quiet", action="store_true", help="Suppress verbose output")
@@ -824,7 +830,7 @@ Examples:
         cluster_config.max_ncore = args.max_ncore
     
     # Create processor
-    processor = VASPNPTProcessor(cluster_config, verbose=args.verbose and not args.quiet)
+    processor = VASPNPTProcessor(cluster_config, verbose=args.verbose and not args.quiet, nsw=args.nsw)
     
     # Parse temperatures and files to delete
     temperatures = processor.parse_temps(args.temps)
