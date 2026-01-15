@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Bulk Modulus Analysis Script for VASP Calculations
+Bulk Modulus Analysis Script for VASP Calculations (No Outlier Removal)
 
 This script analyzes bulk modulus calculations from VASP OUTCAR files.
 It extracts volume and energy data, fits to Birch-Murnaghan EOS,
-and generates comprehensive plots.
+and generates comprehensive plots. All data is plotted without removing outliers.
 
 Key Parameters:
 - B0: Bulk modulus (GPa)
@@ -299,7 +299,7 @@ class BulkModulusAnalyzer:
     def plot_all_compounds(self):
         """Plot all compounds on a single Energy vs Volume plot with EOS fits.
         Energies are normalized (shifted) so each compound's minimum energy is at 0 eV.
-        Outliers are automatically detected and excluded from y-axis scaling.
+        All data is plotted without removing any outliers.
         """
         if not self.data:
             print("No data to plot")
@@ -311,11 +311,11 @@ class BulkModulusAnalyzer:
         # Generate colors for each compound
         colors = plt.cm.tab20(np.linspace(0, 1, n_compounds))
         
-        # Collect all normalized energies to detect outliers
+        # Collect all normalized energies
         all_normalized_energies = []
         plot_data = []
         
-        # First pass: normalize all data and collect statistics
+        # Process all data: normalize and prepare for plotting
         for i, (compound, data) in enumerate(self.data.items()):
             vol_pcts = sorted(data.keys())
             volumes = np.array([data[v]['volume'] for v in vol_pcts])
@@ -359,77 +359,37 @@ class BulkModulusAnalyzer:
                     'fit_result': None
                 })
         
-        # Detect outlier compounds by their maximum absolute normalized energy
-        # This better captures compounds with extreme energy variations
-        compound_stats = []
-        for data in plot_data:
-            energies_norm = data['energies_norm']
-            max_abs_energy = np.max(np.abs(energies_norm))
-            energy_range = np.max(energies_norm) - np.min(energies_norm)
-            compound_stats.append({
-                'compound': data['compound'],
-                'max_abs': max_abs_energy,
-                'range': energy_range
-            })
-        
-        # Calculate percentile-based outlier detection using max absolute energy
-        max_abs_array = np.array([c['max_abs'] for c in compound_stats])
-        # Exclude compounds above 85th percentile to catch more outliers
-        outlier_threshold = np.percentile(max_abs_array, 85)
-        
-        # Use aggressive fixed thresholds to catch extreme outliers
-        # Normalized energies for bulk modulus should typically be < 50 eV
-        # Compounds with much larger variations are likely outliers
-        max_abs_threshold = 100.0  # Exclude compounds with max_abs > 100 eV
-        outlier_threshold = min(outlier_threshold, max_abs_threshold)
-        
-        # Also check energy range for outliers
-        range_array = np.array([c['range'] for c in compound_stats])
-        range_threshold = np.percentile(range_array, 85)
-        range_threshold = min(range_threshold, 200.0)  # Exclude compounds with range > 200 eV
-        
-        # Filter out outlier compounds (exclude if exceeds either threshold)
-        filtered_plot_data = []
-        outlier_compounds = []
-        for i, data in enumerate(plot_data):
-            max_abs = compound_stats[i]['max_abs']
-            energy_range = compound_stats[i]['range']
-            if max_abs <= outlier_threshold and energy_range <= range_threshold:
-                filtered_plot_data.append(data)
-            else:
-                outlier_compounds.append(data['compound'])
-        
-        if outlier_compounds:
-            print(f"\nWarning: Excluding outlier compounds from plot: {', '.join(outlier_compounds)}")
-            print(f"  (Energy range threshold: {outlier_threshold:.1f} eV)\n")
-        
-        # Calculate y-axis limits from non-outlier compounds only
-        filtered_energies = []
-        for data in filtered_plot_data:
-            filtered_energies.extend(data['energies_norm'].tolist())
-        
-        if filtered_energies:
-            filtered_energies = np.array(filtered_energies)
-            # Use 95th percentile of filtered data for cleaner view
-            y_range = np.percentile(np.abs(filtered_energies), 95)
-            y_limit = y_range * 1.2  # Add 20% padding
+        # Calculate y-axis limits from all data (use full range to show all points)
+        all_normalized_energies = np.array(all_normalized_energies)
+        if len(all_normalized_energies) > 0:
+            y_min = np.min(all_normalized_energies)
+            y_max = np.max(all_normalized_energies)
+            y_range = max(abs(y_min), abs(y_max))
+            y_limit = y_range * 1.1  # Add 10% padding
         else:
-            # Fallback if all compounds are outliers
-            all_normalized_energies = np.array(all_normalized_energies)
-            y_range = np.percentile(np.abs(all_normalized_energies), 95)
-            y_limit = y_range * 1.2
-            filtered_plot_data = plot_data  # Use all data if everything is outlier
+            y_limit = 10.0  # Fallback
         
-        # Plot each compound (only non-outliers)
-        for data in filtered_plot_data:
+        # Plot each compound (all data, no filtering)
+        print(f"\nPlotting {len(plot_data)} compound(s):")
+        for data in plot_data:
             compound = data['compound']
             volumes = data['volumes']
             energies_norm = data['energies_norm']
             color = data['color']
             
+            print(f"  '{compound}': {len(volumes)} points, energy range: [{np.min(energies_norm):.3f}, {np.max(energies_norm):.3f}] eV")
+            
             # Plot normalized data points
-            ax.scatter(volumes, energies_norm, s=80, alpha=0.7, 
-                      label=compound, color=color, zorder=3)
+            # Use larger markers and different style for compounds without EOS fit to make them more visible
+            if data['V_fit'] is not None and data['E_fit_norm'] is not None:
+                # Standard markers for compounds with EOS fit
+                ax.scatter(volumes, energies_norm, s=80, alpha=0.7, 
+                          label=compound, color=color, zorder=3)
+            else:
+                # Larger, edge-highlighted markers for compounds without EOS fit
+                ax.scatter(volumes, energies_norm, s=120, alpha=0.8, 
+                          label=compound, color=color, zorder=3,
+                          edgecolors='black', linewidths=1.5, marker='s')
             
             # Plot normalized fitted curve if available
             if data['V_fit'] is not None and data['E_fit_norm'] is not None:
@@ -437,24 +397,23 @@ class BulkModulusAnalyzer:
                 E_fit_norm = data['E_fit_norm']
                 ax.plot(V_fit, E_fit_norm, '-', linewidth=2, color=color, 
                        alpha=0.7, zorder=2)
+                print(f"    -> Fitted curve plotted")
+            else:
+                print(f"    -> No fitted curve (insufficient points or fit failed)")
         
-        # Set y-axis limits to focus on majority of data
+        # Set y-axis limits (symmetric around zero)
         ax.set_ylim(-y_limit, y_limit)
         
         ax.set_xlabel('Volume (Å³)', fontsize=14)
         ax.set_ylabel('Energy - E₀ (eV)', fontsize=14)
-        title = 'Bulk Modulus: Normalized Energy vs Volume'
-        if outlier_compounds:
-            title += f'\n(Excluded outliers: {", ".join(outlier_compounds)})'
-        ax.set_title(title, fontsize=16, fontweight='bold')
+        ax.set_title('Bulk Modulus: Normalized Energy vs Volume\n(All data included, no outliers removed)', 
+                    fontsize=16, fontweight='bold')
         ax.legend(fontsize=8, ncol=3, loc='best', framealpha=0.9)
         ax.grid(True, alpha=0.3)
         ax.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5)
         
         # Add text annotation about y-axis limits
-        annotation_text = f'Y-axis range: ±{y_limit:.1f} eV'
-        if outlier_compounds:
-            annotation_text += f'\n({len(outlier_compounds)} outlier(s) excluded)'
+        annotation_text = f'Y-axis range: ±{y_limit:.1f} eV\n(All {n_compounds} compound(s) plotted)'
         ax.text(0.02, 0.98, annotation_text, 
                transform=ax.transAxes, fontsize=9, verticalalignment='top',
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
@@ -504,7 +463,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Analyze bulk modulus calculations from VASP OUTCAR files'
+        description='Analyze bulk modulus calculations from VASP OUTCAR files (no outlier removal)'
     )
     parser.add_argument(
         'base_dir',

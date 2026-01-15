@@ -1,0 +1,24 @@
+[2025-12-06 17:28:37,073][nequip.utils.versions.package_versions][INFO] - [rank: 0] Version Information:
+[2025-12-06 17:28:37,073][nequip.utils.versions.package_versions][INFO] - [rank: 0] torch 2.4.1+cu118
+[2025-12-06 17:28:37,073][nequip.utils.versions.package_versions][INFO] - [rank: 0] e3nn 0.5.8
+[2025-12-06 17:28:37,073][nequip.utils.versions.package_versions][INFO] - [rank: 0] nequip 0.15.0
+[2025-12-06 17:28:37,073][nequip.utils.versions.package_versions][INFO] - [rank: 0] allegro 0.7.1
+[2025-12-06 17:28:37,073][__main__][INFO] - [rank: 0] This `nequip-train` run will perform the following tasks: ['train', 'val']
+[2025-12-06 17:28:37,073][__main__][INFO] - [rank: 0] and use the output directory provided by Hydra: /Users/924322630/allegro_mno2k/54/4_gpus/outputs/2025-12-06/17-28-37
+[2025-12-06 17:28:37,123][__main__][INFO] - [rank: 0] Building datamodule ...
+[2025-12-06 17:28:37,128][nequip.data.datamodule._base_datamodule][INFO] - [rank: 0] Found 1 training dataset(s), 1 validation dataset(s), 0 test dataset(s), and 0 predict dataset(s).
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] Computed data statistics:
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] num_neighbors_mean: 51.54486821546584
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] per_type_num_neighbors_mean_K: 48.53331493999166
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] per_type_num_neighbors_mean_Mn: 48.32683713209489
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] per_type_num_neighbors_mean_O: 53.328106046095925
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] per_atom_energy_mean: -51.20451088404095
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] forces_rms: 1.2469784671856505
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] per_type_forces_rms_K: 0.7991801246956985
+[2025-12-06 17:28:46,285][nequip.data.stats_manager][INFO] - [rank: 0] per_type_forces_rms_Mn: 1.4033029713372138
+[2025-12-06 17:28:46,286][nequip.data.stats_manager][INFO] - [rank: 0] per_type_forces_rms_O: 1.1835584230592178
+[2025-12-06 17:28:46,288][__main__][INFO] - [rank: 0] Building model and training_module from scratch ...
+[2025-12-06 17:28:47,123][__main__][INFO] - [rank: 0] TRAIN RUN START
+[2025-12-06 22:18:42,785][__main__][INFO] - [rank: 0] TRAIN RUN END
+[2025-12-06 22:18:42,786][__main__][INFO] - [rank: 0] VAL RUN START
+[2025-12-06 22:18:44,621][__main__][INFO] - [rank: 0] VAL RUN END

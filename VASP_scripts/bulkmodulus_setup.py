@@ -4,7 +4,7 @@ from pathlib import Path
 
 # Default sweep settings
 # percent strain about current volume (e.g., -6% ... +6%)
-DEFAULT_VOL_PCT_MIN, DEFAULT_VOL_PCT_MAX, DEFAULT_NPTS = -30.0, 30.0, 25  # includes 0%
+DEFAULT_VOL_PCT_MIN, DEFAULT_VOL_PCT_MAX, DEFAULT_NPTS = -70.0, 70.0, 140  # includes 0%
 COPY_FILES = ["INCAR", "KPOINTS", "POTCAR", "submit.vasp6.sh"]     # symlink if possible, else copy
 TEMPLATE_FILES_TO_REMOVE = ["INCAR", "KPOINTS", "POSCAR", "POTCAR", "submit.vasp6.sh"]  # Files to remove from template dir after setup
 

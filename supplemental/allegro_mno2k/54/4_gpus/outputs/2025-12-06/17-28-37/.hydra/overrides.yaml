@@ -1,0 +1,5 @@
+- data.split_dataset.dataset.file_path=final_frames.xyz
+- trainer.accelerator=gpu
+- trainer.devices=4
+- +trainer.strategy=ddp
+- trainer.log_every_n_steps=1
