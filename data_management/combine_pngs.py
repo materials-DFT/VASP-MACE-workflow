@@ -5,25 +5,13 @@ Preserves all pixel data including transparency/alpha channels.
 """
 
 import os
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import math
 from pathlib import Path
 import argparse
-import re
 
 # Increase PIL's decompression bomb limit to handle large images
 Image.MAX_IMAGE_PIXELS = None
-
-def extract_identifier_from_filename(filename):
-    """
-    Extract identifier from filename like 'candidate_scores_001_001.png' -> '001_001'
-    Returns None if pattern not found.
-    """
-    # Pattern: candidate_scores_XXX_XXX.png
-    match = re.search(r'candidate_scores_(\d+_\d+)\.png', filename, re.IGNORECASE)
-    if match:
-        return match.group(1)
-    return None
 
 def combine_pngs_to_grid(directory, output_path):
     """
@@ -113,20 +101,6 @@ def combine_pngs_to_grid(directory, output_path):
     
     combined_image = Image.new(image_mode, (combined_width, combined_height), color=bg_color)
     
-    # Try to load a font for text labels, fall back to default if not available
-    try:
-        # Try to use a default font (size will be calculated based on image dimensions)
-        font_size = max(12, min(max_width, max_height) // 30)
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            try:
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-            except:
-                font = ImageFont.load_default()
-    except:
-        font = ImageFont.load_default()
-    
     # Process images one at a time to save memory
     print("Combining images...")
     for idx, png_file in enumerate(png_files):
@@ -143,38 +117,7 @@ def combine_pngs_to_grid(directory, output_path):
                     else:
                         img = img.convert('RGB')
                 
-                # Extract identifier from filename and add as text label
-                identifier = extract_identifier_from_filename(os.path.basename(png_file))
-                if identifier:
-                    # Convert to RGBA temporarily to add label with transparency
-                    img_rgba = img.convert('RGBA')
-                    overlay = Image.new('RGBA', img_rgba.size, (0, 0, 0, 0))
-                    overlay_draw = ImageDraw.Draw(overlay)
-                    
-                    # Calculate text position (top-left corner with some padding)
-                    text_padding = 5
-                    text_x = text_padding
-                    text_y = text_padding
-                    
-                    # Get text bounding box
-                    bbox = overlay_draw.textbbox((0, 0), identifier, font=font)
-                    text_width = bbox[2] - bbox[0]
-                    text_height = bbox[3] - bbox[1]
-                    
-                    # Draw semi-transparent white background rectangle
-                    overlay_draw.rectangle(
-                        [text_x - 2, text_y - 2, text_x + text_width + 2, text_y + text_height + 2],
-                        fill=(255, 255, 255, 200)  # White background with transparency
-                    )
-                    
-                    # Draw text on overlay
-                    overlay_draw.text((text_x, text_y), identifier, fill=(0, 0, 0, 255), font=font)
-                    
-                    # Composite overlay onto image
-                    img_rgba = Image.alpha_composite(img_rgba, overlay)
-                    
-                    # Convert back to RGB
-                    img = img_rgba.convert('RGB')
+                # Image is ready to paste (no text labels added)
                 
                 row = idx // cols
                 col = idx % cols
