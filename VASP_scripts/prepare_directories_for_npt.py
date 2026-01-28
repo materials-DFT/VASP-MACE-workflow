@@ -146,49 +146,52 @@ class VASPNPTProcessor:
     """
     
     # Atomic data for parameter optimization
+    # gamma_opt values calculated using 1/sqrt(m) scaling with O (16 amu, gamma=7.0) as reference
+    # Formula: gamma = 7.0 * sqrt(16/mass)
     ATOMIC_DATA = {
-        'H': {'Z': 1, 'mass': 1.008, 'gamma_opt': 20.0},
-        'He': {'Z': 2, 'mass': 4.003, 'gamma_opt': 15.0},
-        'Li': {'Z': 3, 'mass': 6.941, 'gamma_opt': 12.0},
-        'Be': {'Z': 4, 'mass': 9.012, 'gamma_opt': 10.0},
-        'B': {'Z': 5, 'mass': 10.811, 'gamma_opt': 8.0},
-        'C': {'Z': 6, 'mass': 12.011, 'gamma_opt': 8.0},
-        'N': {'Z': 7, 'mass': 14.007, 'gamma_opt': 8.0},
+        'H': {'Z': 1, 'mass': 1.008, 'gamma_opt': 27.9},
+        'He': {'Z': 2, 'mass': 4.003, 'gamma_opt': 14.0},
+        'Li': {'Z': 3, 'mass': 6.941, 'gamma_opt': 10.6},
+        'Be': {'Z': 4, 'mass': 9.012, 'gamma_opt': 9.3},
+        'B': {'Z': 5, 'mass': 10.811, 'gamma_opt': 8.5},
+        'C': {'Z': 6, 'mass': 12.011, 'gamma_opt': 8.1},
+        'N': {'Z': 7, 'mass': 14.007, 'gamma_opt': 7.5},
         'O': {'Z': 8, 'mass': 15.999, 'gamma_opt': 7.0},
-        'F': {'Z': 9, 'mass': 18.998, 'gamma_opt': 6.0},
-        'Ne': {'Z': 10, 'mass': 20.180, 'gamma_opt': 5.0},
-        'Na': {'Z': 11, 'mass': 22.990, 'gamma_opt': 4.0},
-        'Mg': {'Z': 12, 'mass': 24.305, 'gamma_opt': 3.0},
-        'Al': {'Z': 13, 'mass': 26.982, 'gamma_opt': 3.0},
-        'Si': {'Z': 14, 'mass': 28.085, 'gamma_opt': 3.0},
-        'P': {'Z': 15, 'mass': 30.974, 'gamma_opt': 3.0},
-        'S': {'Z': 16, 'mass': 32.065, 'gamma_opt': 2.5},
-        'Cl': {'Z': 17, 'mass': 35.453, 'gamma_opt': 2.0},
-        'Ar': {'Z': 18, 'mass': 39.948, 'gamma_opt': 2.0},
-        'K': {'Z': 19, 'mass': 39.098, 'gamma_opt': 1.5},
-        'Ca': {'Z': 20, 'mass': 40.078, 'gamma_opt': 1.5},
-        'Sc': {'Z': 21, 'mass': 44.956, 'gamma_opt': 1.0},
-        'Ti': {'Z': 22, 'mass': 47.867, 'gamma_opt': 1.0},
-        'V': {'Z': 23, 'mass': 50.942, 'gamma_opt': 1.0},
-        'Cr': {'Z': 24, 'mass': 51.996, 'gamma_opt': 1.0},
-        'Mn': {'Z': 25, 'mass': 54.938, 'gamma_opt': 2.5},
-        'Fe': {'Z': 26, 'mass': 55.845, 'gamma_opt': 2.0},
-        'Co': {'Z': 27, 'mass': 58.933, 'gamma_opt': 2.0},
-        'Ni': {'Z': 28, 'mass': 58.693, 'gamma_opt': 2.0},
-        'Cu': {'Z': 29, 'mass': 63.546, 'gamma_opt': 2.0},
-        'Zn': {'Z': 30, 'mass': 65.409, 'gamma_opt': 1.5},
-        'Ga': {'Z': 31, 'mass': 69.723, 'gamma_opt': 1.5},
-        'Ge': {'Z': 32, 'mass': 72.640, 'gamma_opt': 1.5},
-        'As': {'Z': 33, 'mass': 74.922, 'gamma_opt': 1.5},
-        'Se': {'Z': 34, 'mass': 78.960, 'gamma_opt': 1.0},
-        'Br': {'Z': 35, 'mass': 79.904, 'gamma_opt': 1.0},
-        'Kr': {'Z': 36, 'mass': 83.798, 'gamma_opt': 1.0},
+        'F': {'Z': 9, 'mass': 18.998, 'gamma_opt': 6.4},
+        'Ne': {'Z': 10, 'mass': 20.180, 'gamma_opt': 6.2},
+        'Na': {'Z': 11, 'mass': 22.990, 'gamma_opt': 5.8},
+        'Mg': {'Z': 12, 'mass': 24.305, 'gamma_opt': 5.7},
+        'Al': {'Z': 13, 'mass': 26.982, 'gamma_opt': 5.4},
+        'Si': {'Z': 14, 'mass': 28.085, 'gamma_opt': 5.3},
+        'P': {'Z': 15, 'mass': 30.974, 'gamma_opt': 5.0},
+        'S': {'Z': 16, 'mass': 32.065, 'gamma_opt': 4.9},
+        'Cl': {'Z': 17, 'mass': 35.453, 'gamma_opt': 4.7},
+        'Ar': {'Z': 18, 'mass': 39.948, 'gamma_opt': 4.4},
+        'K': {'Z': 19, 'mass': 39.098, 'gamma_opt': 4.5},
+        'Ca': {'Z': 20, 'mass': 40.078, 'gamma_opt': 4.4},
+        'Sc': {'Z': 21, 'mass': 44.956, 'gamma_opt': 4.2},
+        'Ti': {'Z': 22, 'mass': 47.867, 'gamma_opt': 4.0},
+        'V': {'Z': 23, 'mass': 50.942, 'gamma_opt': 3.9},
+        'Cr': {'Z': 24, 'mass': 51.996, 'gamma_opt': 3.9},
+        'Mn': {'Z': 25, 'mass': 54.938, 'gamma_opt': 3.8},
+        'Fe': {'Z': 26, 'mass': 55.845, 'gamma_opt': 3.7},
+        'Co': {'Z': 27, 'mass': 58.933, 'gamma_opt': 3.6},
+        'Ni': {'Z': 28, 'mass': 58.693, 'gamma_opt': 3.7},
+        'Cu': {'Z': 29, 'mass': 63.546, 'gamma_opt': 3.5},
+        'Zn': {'Z': 30, 'mass': 65.409, 'gamma_opt': 3.5},
+        'Ga': {'Z': 31, 'mass': 69.723, 'gamma_opt': 3.4},
+        'Ge': {'Z': 32, 'mass': 72.640, 'gamma_opt': 3.3},
+        'As': {'Z': 33, 'mass': 74.922, 'gamma_opt': 3.2},
+        'Se': {'Z': 34, 'mass': 78.960, 'gamma_opt': 3.2},
+        'Br': {'Z': 35, 'mass': 79.904, 'gamma_opt': 3.1},
+        'Kr': {'Z': 36, 'mass': 83.798, 'gamma_opt': 3.1},
     }
     
-    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True):
+    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True, nsw: int = 10000):
         """Initialize the processor."""
         self.cluster_config = cluster_config
         self.verbose = verbose
+        self.nsw = nsw  # Default number of MD steps
         self.processed_dirs = []
         self.skipped_dirs = []
         self.systems_analyzed = []
@@ -223,12 +226,15 @@ class VASPNPTProcessor:
             with open(poscar_path, 'r') as f:
                 lines = f.readlines()
             
-            # Read lattice vectors (lines 2-4)
+            # Read scaling factor (line 1)
+            scaling_factor = float(lines[1].strip().split()[0])
+            
+            # Read lattice vectors (lines 2-4) and apply scaling factor
             lattice = np.array([
                 [float(x) for x in lines[2].split()],
                 [float(x) for x in lines[3].split()],
                 [float(x) for x in lines[4].split()]
-            ])
+            ]) * scaling_factor
             
             # Read species and counts (lines 5-6)
             species_line = lines[5].strip().split()
@@ -377,29 +383,34 @@ class VASPNPTProcessor:
         # Calculate average atomic mass
         avg_mass = sum(s.count * s.atomic_mass for s in species_list) / total_atoms
         
-        # Calculate optimal time step based on temperature and atomic masses
-        temp_factor = max(0.5, min(2.0, 300.0 / temperature))
-        mass_factor = max(0.5, min(2.0, 20.0 / avg_mass))
-        optimal_potim = max(0.5, min(2.0, 1.0 * temp_factor * mass_factor))
+        # Calculate optimal time step based on lightest atom
+        # Standard MD timesteps: 0.5 fs if H present, 1.0 fs otherwise (safe default)
+        # 2.0 fs possible for heavy systems but 1.0 fs is safer
+        min_mass = min(s.atomic_mass for s in species_list)
+        if min_mass < 2.0:  # Hydrogen present
+            optimal_potim = 0.5
+        else:
+            optimal_potim = 1.0
         
         # Calculate optimal friction coefficients for each species
+        # Scale with temperature: higher T may need slightly higher friction for stability
         langevin_gamma = []
         for species in species_list:
             temp_adjustment = max(0.5, min(2.0, temperature / 300.0))
             gamma = species.friction_coefficient * temp_adjustment
             langevin_gamma.append(gamma)
         
-        # Calculate optimal PMASS based on system size and temperature
-        size_factor = max(0.5, min(3.0, total_atoms / 50.0))
-        temp_factor_pmass = max(0.5, min(2.0, temperature / 300.0))
-        optimal_pmass = max(500, min(5000, 1000 * size_factor * temp_factor_pmass))
+        # PMASS: fictitious mass for Parrinello-Rahman barostat
+        # Standard value ~1000 works for most systems
+        optimal_pmass = 1000
         
-        # Calculate optimal LANGEVIN_GAMMA_L based on system properties
-        complexity_factor = max(0.5, min(2.0, total_atoms / 20.0))
-        optimal_gamma_l = max(0.5, min(20.0, 10.0 * complexity_factor))
+        # LANGEVIN_GAMMA_L: friction for lattice degrees of freedom
+        # Standard value ~10 ps^-1, independent of system size
+        optimal_gamma_l = 10.0
         
-        # Determine number of MD steps based on system size and complexity
-        optimal_nsw = max(5000, min(50000, 10000 * size_factor))
+        # NSW: number of MD steps (10000 steps × 1 fs = 10 ps simulation)
+        # Use value from processor (set via --nsw argument) or existing INCAR
+        optimal_nsw = existing_params.get('NSW', self.nsw) if existing_params.get('NSW') else self.nsw
         
         # Create NPT parameters object
         npt_params = NPTParameters(
@@ -797,6 +808,7 @@ Examples:
     parser.add_argument("--cores-per-node", type=int, help="Cores per node (overrides cluster config)")
     parser.add_argument("--nodes", type=int, help="Number of nodes (overrides cluster config)")
     parser.add_argument("--max-ncore", type=int, help="Maximum NCORE value")
+    parser.add_argument("--nsw", type=int, default=10000, help="Number of MD steps (default: 10000)")
     parser.add_argument("--dry-run", action="store_true", help="Analyze only, don't update files")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--quiet", action="store_true", help="Suppress verbose output")
@@ -818,7 +830,7 @@ Examples:
         cluster_config.max_ncore = args.max_ncore
     
     # Create processor
-    processor = VASPNPTProcessor(cluster_config, verbose=args.verbose and not args.quiet)
+    processor = VASPNPTProcessor(cluster_config, verbose=args.verbose and not args.quiet, nsw=args.nsw)
     
     # Parse temperatures and files to delete
     temperatures = processor.parse_temps(args.temps)
