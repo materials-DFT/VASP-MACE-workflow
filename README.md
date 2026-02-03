@@ -190,4 +190,3 @@ This repository contains scripts developed for specific computational workflows.
 ## 📄 License
 
 This repository contains utility scripts for computational materials science workflows. Use and modify as needed for your research
-hello
