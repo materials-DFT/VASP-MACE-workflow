@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Scan specified directories for VASP OUTCAR/CONTCAR, find the lowest-energy
+Scan specified directories for VASP OUTCARs, find the lowest-energy
 frame per directory, then extract the 10 frames closest in energy to that
 minimum. All frames from all directories are written into a single multi-frame
-extended XYZ file (with lattice and stress when available).
+extended XYZ file (with lattice and stress). Uses only OUTCAR (no CONTCAR).
 """
 
 import re
@@ -69,68 +69,106 @@ def get_stress_from_outcar(outcar_path):
     return [v * KB_TO_EV_ANG3 for v in voigt_kb]
 
 
-def parse_contcar(contcar_path):
+def _element_from_titel_line(line):
+    """Extract element symbol from OUTCAR/POTCAR TITEL line (e.g. 'TITEL  = PAW P 15Jan2000')."""
+    tokens = line.strip().split()
+    for tok in tokens:
+        base = tok.split("_", 1)[0]
+        if re.fullmatch(r"[A-Z][a-z]?", base):
+            return base
+    return None
+
+
+def parse_structure_from_outcar(outcar_path):
     """
-    Parse VASP CONTCAR. Returns (lattice_cart, coords) where lattice_cart is a
-    3x3 list (Cartesian Angstrom), coords is list of (species, x, y, z) in
-    Cartesian Angstrom; or None on error. Handles Direct/Cartesian and optional
-    Selective dynamics.
+    Parse the final structure (lattice + species + positions) from a VASP OUTCAR.
+    Returns (lattice_cart, coords) where lattice_cart is 3x3 Cartesian Angstrom,
+    coords is list of (species, x, y, z) in Cartesian Angstrom; or None on error.
     """
     try:
-        with open(contcar_path, "r") as f:
+        with open(outcar_path, "r") as f:
             lines = [l.rstrip() for l in f.readlines()]
     except OSError:
         return None
 
-    if len(lines) < 9:
-        return None
-
     try:
-        scale = float(lines[1].split()[0])
-        lattice = [
-            [float(x) for x in lines[2].split()],
-            [float(x) for x in lines[3].split()],
-            [float(x) for x in lines[4].split()],
-        ]
-        symbols = lines[5].split()
-        counts = [int(x) for x in lines[6].split()]
-        if len(symbols) != len(counts):
-            return None
-        n_atoms = sum(counts)
-        coord_start = 8
-        if lines[7].strip().lower().startswith("selective"):
-            coord_start = 9
-        mode = lines[coord_start - 1].strip().lower()
-        if "direct" in mode:
-            fractional = True
-        else:
-            fractional = True if "cartesian" not in mode else False
+        # Species: TITEL lines in order (from POTCAR echo in OUTCAR)
+        species_from_titel = []
+        for line in lines:
+            if line.strip().startswith("TITEL"):
+                el = _element_from_titel_line(line)
+                if el:
+                    species_from_titel.append(el)
 
+        # Counts: "ions per type = n1 n2 ..."
+        counts = None
+        for line in lines:
+            if "ions per type" in line.lower():
+                parts = line.split("=")
+                if len(parts) >= 2:
+                    counts = [int(x) for x in parts[1].split()]
+                    break
+        if not counts:
+            return None
+
+        # If we have TITEL-derived species, use them; else fallback to generic (e.g. X1, X2)
+        if len(species_from_titel) >= len(counts):
+            symbols = species_from_titel[: len(counts)]
+        else:
+            symbols = [f"X{i+1}" for i in range(len(counts))]
         species_list = []
         for sym, cnt in zip(symbols, counts):
             species_list.extend([sym] * cnt)
+        n_atoms = sum(counts)
 
-        # Lattice in Cartesian Angstrom (scale * rows)
-        lattice_cart = [
-            [scale * lattice[0][0], scale * lattice[0][1], scale * lattice[0][2]],
-            [scale * lattice[1][0], scale * lattice[1][1], scale * lattice[1][2]],
-            [scale * lattice[2][0], scale * lattice[2][1], scale * lattice[2][2]],
-        ]
-        coords = []
-        for i in range(n_atoms):
-            parts = lines[coord_start + i].split()
-            if len(parts) < 3:
-                return None
-            x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
-            if fractional:
-                # Convert fractional to Cartesian: r_cart = scale * (a*x + b*y + c*z)
-                cx = scale * (lattice[0][0] * x + lattice[1][0] * y + lattice[2][0] * z)
-                cy = scale * (lattice[0][1] * x + lattice[1][1] * y + lattice[2][1] * z)
-                cz = scale * (lattice[0][2] * x + lattice[1][2] * y + lattice[2][2] * z)
-                coords.append((species_list[i], cx, cy, cz))
-            else:
-                coords.append((species_list[i], scale * x, scale * y, scale * z))
+        # Last lattice: "LATTICE" and "ANGSTROM" (or "direct lattice vectors")
+        lattice_cart = None
+        for i in range(len(lines) - 3):
+            line_lower = lines[i].lower()
+            if ("lattice" in line_lower and "angstrom" in line_lower) or (
+                "direct" in line_lower and "lattice" in line_lower
+            ):
+                try:
+                    lattice_cart = [
+                        [float(x) for x in lines[i + 1].split()[:3]],
+                        [float(x) for x in lines[i + 2].split()[:3]],
+                        [float(x) for x in lines[i + 3].split()[:3]],
+                    ]
+                except (ValueError, IndexError):
+                    pass
 
+        if lattice_cart is None:
+            return None
+
+        # Last POSITION / TOTAL-FORCE block: positions are first 3 columns (Angstrom)
+        coords = None
+        for i in range(len(lines)):
+            if "POSITION" in lines[i] and "TOTAL-FORCE" in lines[i]:
+                pos_lines = []
+                j = i + 2  # skip header and "---"
+                while j < len(lines) and len(pos_lines) < n_atoms + 2:
+                    stripped = lines[j].strip()
+                    if not stripped or "---" in stripped:
+                        if len(pos_lines) >= n_atoms:
+                            break
+                        j += 1
+                        continue
+                    parts = lines[j].split()
+                    if len(parts) >= 3:
+                        try:
+                            x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+                            pos_lines.append((x, y, z))
+                        except ValueError:
+                            pass
+                    j += 1
+                if len(pos_lines) == n_atoms:
+                    coords = [
+                        (species_list[k], pos_lines[k][0], pos_lines[k][1], pos_lines[k][2])
+                        for k in range(n_atoms)
+                    ]
+
+        if coords is None:
+            return None
         return (lattice_cart, coords)
     except (IndexError, ValueError):
         return None
@@ -160,14 +198,13 @@ def write_xyz_frames(filepath, frames):
 
 
 def _collect_candidates(top_path):
-    """Return list of (subdir_path, energy) for direct children with OUTCAR/CONTCAR."""
+    """Return list of (subdir_path, energy) for direct children with OUTCAR."""
     candidates = []
     for sub in sorted(top_path.iterdir()):
         if not sub.is_dir():
             continue
         outcar = sub / "OUTCAR"
-        contcar = sub / "CONTCAR"
-        if not outcar.is_file() or not contcar.is_file():
+        if not outcar.is_file():
             continue
         energy = get_final_energy_from_outcar(outcar)
         if energy is None:
@@ -178,10 +215,11 @@ def _collect_candidates(top_path):
 
 def process_directory(top_dir, num_frames=10):
     """
-    For one directory (e.g. gamma/), find subdirs with OUTCAR/CONTCAR,
+    For one directory (e.g. gamma/), find subdirs with OUTCAR,
     get final energy from each OUTCAR, find minimum, then the num_frames
-    subdirs closest in energy. Return their CONTCARs as a list of (comment, atoms) frames.
-    If direct children have no OUTCAR/CONTCAR but their children do (e.g.
+    subdirs closest in energy. Return their structures (from OUTCAR) as
+    (comment, lattice, atoms, stress) frames.
+    If direct children have no OUTCAR but their children do (e.g.
     isif3/gamma/V_+00.5%), process each direct child and aggregate returned frames.
     """
     top_path = Path(top_dir).resolve()
@@ -191,7 +229,7 @@ def process_directory(top_dir, num_frames=10):
 
     candidates = _collect_candidates(top_path)
 
-    # No OUTCAR/CONTCAR in direct children: try one level deeper (e.g. isif3 -> gamma -> V_+00.5%)
+    # No OUTCAR in direct children: try one level deeper (e.g. isif3 -> gamma -> V_+00.5%)
     if not candidates:
         all_frames = []
         subdirs = sorted([p for p in top_path.iterdir() if p.is_dir()])
@@ -205,20 +243,21 @@ def process_directory(top_dir, num_frames=10):
     by_dist = sorted(candidates, key=lambda x: abs(x[1] - min_energy))
     selected = by_dist[:num_frames]
 
-    # Build frames from CONTCARs and stress from OUTCARs
+    # Build frames from OUTCARs (structure + stress)
     frames = []
     for sub, en in selected:
-        parsed = parse_contcar(sub / "CONTCAR")
+        outcar = sub / "OUTCAR"
+        parsed = parse_structure_from_outcar(outcar)
         if parsed is None:
-            print(f"Failed to parse CONTCAR: {sub / 'CONTCAR'}", file=sys.stderr)
+            print(f"Failed to parse structure from OUTCAR: {outcar}", file=sys.stderr)
             continue
         lattice_cart, atoms = parsed
-        stress_voigt = get_stress_from_outcar(sub / "OUTCAR")
+        stress_voigt = get_stress_from_outcar(outcar)
         comment = f"{sub.name}  E = {en:.6f} eV"
         frames.append((comment, lattice_cart, atoms, stress_voigt))
 
     if not frames:
-        print(f"No valid CONTCARs among selected frames under {top_path}", file=sys.stderr)
+        print(f"No valid structures among selected frames under {top_path}", file=sys.stderr)
         return []
 
     print(f"Collected {len(frames)} frames from {top_path} (min E = {min_energy:.6f} eV)")
@@ -232,7 +271,7 @@ def main():
     parser.add_argument(
         "directories",
         nargs="+",
-        help="Directories to scan (each should contain subdirs with OUTCAR and CONTCAR)",
+        help="Directories to scan (each should contain subdirs with OUTCAR)",
     )
     parser.add_argument(
         "-o", "--output",
