@@ -3,13 +3,16 @@
 Scan specified directories for VASP OUTCAR/CONTCAR, find the lowest-energy
 frame per directory, then extract the 10 frames closest in energy to that
 minimum. All frames from all directories are written into a single multi-frame
-XYZ file.
+extended XYZ file (with lattice and stress when available).
 """
 
 import re
 import sys
 import argparse
 from pathlib import Path
+
+# VASP stress in OUTCAR is in kB. 1 kB = 0.1 GPa; 1 eV/Å³ = 160.2176634 GPa.
+KB_TO_EV_ANG3 = 0.1 / 160.2176634
 
 
 def get_final_energy_from_outcar(outcar_path):
@@ -27,10 +30,51 @@ def get_final_energy_from_outcar(outcar_path):
         return None
 
 
+def get_stress_from_outcar(outcar_path):
+    """
+    Extract the last 3x3 stress tensor from OUTCAR (in kB), convert to Voigt
+    (xx, yy, zz, yz, xz, xy) in eV/Å³. Returns None if not found.
+    """
+    last_stress_3x3 = None
+    try:
+        with open(outcar_path, "r") as f:
+            lines = f.readlines()
+        i = 0
+        while i < len(lines):
+            if " in kB " in lines[i].strip():
+                stress_3x3 = []
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    parts = lines[j].split()
+                    if len(parts) >= 3:
+                        try:
+                            row = [float(parts[0]), float(parts[1]), float(parts[2])]
+                            stress_3x3.append(row)
+                        except ValueError:
+                            break
+                if len(stress_3x3) == 3:
+                    last_stress_3x3 = stress_3x3
+                i += 4
+                continue
+            i += 1
+    except OSError:
+        return None
+    if last_stress_3x3 is None:
+        return None
+    # Voigt order: xx, yy, zz, yz, xz, xy
+    s = last_stress_3x3
+    voigt_kb = [
+        s[0][0], s[1][1], s[2][2],
+        s[1][2], s[0][2], s[0][1]
+    ]
+    return [v * KB_TO_EV_ANG3 for v in voigt_kb]
+
+
 def parse_contcar(contcar_path):
     """
-    Parse VASP CONTCAR. Returns list of (species, x, y, z) in Cartesian Angstrom,
-    or None on error. Handles Direct/Cartesian and optional Selective dynamics.
+    Parse VASP CONTCAR. Returns (lattice_cart, coords) where lattice_cart is a
+    3x3 list (Cartesian Angstrom), coords is list of (species, x, y, z) in
+    Cartesian Angstrom; or None on error. Handles Direct/Cartesian and optional
+    Selective dynamics.
     """
     try:
         with open(contcar_path, "r") as f:
@@ -66,6 +110,12 @@ def parse_contcar(contcar_path):
         for sym, cnt in zip(symbols, counts):
             species_list.extend([sym] * cnt)
 
+        # Lattice in Cartesian Angstrom (scale * rows)
+        lattice_cart = [
+            [scale * lattice[0][0], scale * lattice[0][1], scale * lattice[0][2]],
+            [scale * lattice[1][0], scale * lattice[1][1], scale * lattice[1][2]],
+            [scale * lattice[2][0], scale * lattice[2][1], scale * lattice[2][2]],
+        ]
         coords = []
         for i in range(n_atoms):
             parts = lines[coord_start + i].split()
@@ -81,18 +131,30 @@ def parse_contcar(contcar_path):
             else:
                 coords.append((species_list[i], scale * x, scale * y, scale * z))
 
-        return coords
+        return (lattice_cart, coords)
     except (IndexError, ValueError):
         return None
 
 
 def write_xyz_frames(filepath, frames):
-    """Write multiple structures to a single multi-frame XYZ file."""
+    """Write multiple structures to a single multi-frame extended XYZ file (lattice + optional stress)."""
     with open(filepath, "w") as f:
-        for comment, atoms in frames:
+        for item in frames:
+            comment = item[0]
+            lattice_cart = item[1]
+            atoms = item[2]
+            stress_voigt = item[3] if len(item) > 3 else None
             n = len(atoms)
             f.write(f"{n}\n")
-            f.write(f"{comment}\n")
+            lat_flat = [lattice_cart[i][j] for i in range(3) for j in range(3)]
+            lat_str = " ".join(f"{x:.10f}" for x in lat_flat)
+            # Extended XYZ: Lattice, Properties, optional stress, comment
+            line_parts = [f'Lattice="{lat_str}"', 'Properties=species:S:1:pos:R:3']
+            if stress_voigt is not None:
+                s = stress_voigt
+                line_parts.append(f"stress={s[0]:.10f} {s[1]:.10f} {s[2]:.10f} {s[3]:.10f} {s[4]:.10f} {s[5]:.10f}")
+            line_parts.append(f'comment="{comment}"')
+            f.write(" ".join(line_parts) + "\n")
             for spec, x, y, z in atoms:
                 f.write(f"{spec} {x:.10f} {y:.10f} {z:.10f}\n")
 
@@ -143,15 +205,17 @@ def process_directory(top_dir, num_frames=10):
     by_dist = sorted(candidates, key=lambda x: abs(x[1] - min_energy))
     selected = by_dist[:num_frames]
 
-    # Build frames from CONTCARs
+    # Build frames from CONTCARs and stress from OUTCARs
     frames = []
     for sub, en in selected:
-        atoms = parse_contcar(sub / "CONTCAR")
-        if atoms is None:
+        parsed = parse_contcar(sub / "CONTCAR")
+        if parsed is None:
             print(f"Failed to parse CONTCAR: {sub / 'CONTCAR'}", file=sys.stderr)
             continue
+        lattice_cart, atoms = parsed
+        stress_voigt = get_stress_from_outcar(sub / "OUTCAR")
         comment = f"{sub.name}  E = {en:.6f} eV"
-        frames.append((comment, atoms))
+        frames.append((comment, lattice_cart, atoms, stress_voigt))
 
     if not frames:
         print(f"No valid CONTCARs among selected frames under {top_path}", file=sys.stderr)
