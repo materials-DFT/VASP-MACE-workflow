@@ -159,14 +159,25 @@ def find_md_directories(base_path: str) -> List[Tuple[str, str, str]]:
     return md_dirs
 
 
-def extract_frames_from_outcar(outcar_path: str, frame_indices: List[int]) -> List[Atoms]:
+def make_run_id(base_path: str, outcar_path: str) -> str:
+    """Create run_id exactly like extract_frames_from_md.py."""
+    try:
+        rel = Path(outcar_path).resolve().relative_to(Path(base_path).resolve())
+    except ValueError:
+        rel = Path(outcar_path).resolve()
+    return str(rel.parent).replace("/", "_")
+
+
+def extract_frames_from_outcar(outcar_path: str, frame_indices: List[int], run_id: str) -> List[Atoms]:
     """Read OUTCAR with ASE and return frames at the given indices (ionic steps)."""
     try:
         images = io.read(outcar_path, index=':')
         frames = []
         for idx in frame_indices:
             if 0 <= idx < len(images):
-                frames.append(images[idx])
+                atoms = images[idx]
+                atoms.info["run_id"] = run_id
+                frames.append(atoms)
             else:
                 print(f"Warning: Frame index {idx} out of range (max: {len(images)-1})")
         return frames
@@ -261,7 +272,8 @@ def extract_frames_for_mlff(base_path: str, output_path: str, nsw_override: dict
         print(f"  NSW: {nsw}, Supercell: {is_super}")
         print(f"  Extracting {len(frame_indices)} frames (indices: {frame_indices[0]}..{frame_indices[-1]})")
 
-        frames = extract_frames_from_outcar(outcar_path, frame_indices)
+        run_id = make_run_id(base_path, outcar_path)
+        frames = extract_frames_from_outcar(outcar_path, frame_indices, run_id)
 
         if len(frames) == 0:
             print(f"  Warning: No frames extracted")

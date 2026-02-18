@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-Extract the lowest-energy frame from each VASP OUTCAR into a single extended XYZ file.
+Extract ALL frames from VASP OUTCAR(s) in a directory into a single extended XYZ file.
 
-For each OUTCAR found under the given directory, reads the full ionic trajectory,
-picks the frame with the minimum total energy, and writes one combined XYZ with
-one frame per structure (energy, forces, lattice included).
+Uses the same extraction method as extract_frames_for_mlff.py and extract_optimized_frames.py:
+ASE reads OUTCAR trajectory (energy, forces, stress, lattice) and writes extended XYZ.
+
+Unlike extract_frames_for_mlff.py (stride/skip/cap) or extract_optimized_frames.py (lowest-energy
+only), this script extracts every frame from every OUTCAR found under the given directory.
 
 Usage:
-  python extract_frames.py <directory> [-o output.xyz]
+  python extract_all_frames.py <directory> [-o output.xyz]
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 import os
+import sys
 from pathlib import Path
 
 try:
@@ -64,18 +66,18 @@ def make_run_id(root: Path, outcar_path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract lowest-energy frame from each VASP OUTCAR into one extended XYZ file."
+        description="Extract ALL frames from VASP OUTCAR(s) into one extended XYZ file."
     )
     parser.add_argument(
         "directory",
         type=Path,
-        help="Root directory to search for OUTCAR files",
+        help="Directory to search for OUTCAR files (searches recursively)",
     )
     parser.add_argument(
         "-o", "--output",
         type=Path,
-        default=Path("optimized_frames.xyz"),
-        help="Output extended XYZ file (default: optimized_frames.xyz)",
+        default=None,
+        help="Output extended XYZ file (default: all_frames_<count>.xyz)",
     )
     parser.add_argument(
         "-q", "--quiet",
@@ -86,7 +88,7 @@ def main() -> None:
         "--log",
         type=str,
         default=None,
-        help="Log file path (default: <output_stem>.log, e.g. optimized_frames.log)",
+        help="Log file path (default: <output_stem>.log)",
     )
     args = parser.parse_args()
 
@@ -95,43 +97,52 @@ def main() -> None:
         print(f"Error: Not a directory: {root}", file=sys.stderr)
         sys.exit(1)
 
+    outcars = find_outcars(root)
+    if not outcars:
+        print("Error: No OUTCAR files found.", file=sys.stderr)
+        sys.exit(1)
+
+    # Default output: all_frames_<count>.xyz (we'll set count after extraction)
+    output_path = args.output
+    if output_path is None:
+        output_path = Path("all_frames.xyz")  # placeholder, renamed after
+
     # Log file: default to <output_stem>.log
     if args.log is None:
-        args.log = os.path.splitext(str(args.output))[0] + ".log"
+        args.log = os.path.splitext(str(output_path))[0] + ".log"
 
     tee = None
     try:
         tee = Tee(args.log)
         sys.stdout = tee
 
-        outcars = find_outcars(root)
-        if not outcars:
-            print("Error: No OUTCAR files found.", file=sys.stderr)
-            sys.exit(1)
-
         if not args.quiet:
-            print(f"Found {len(outcars)} OUTCAR(s). Extracting lowest-energy frame per structure...")
+            print(f"Found {len(outcars)} OUTCAR(s). Extracting all frames...")
 
-        best_frames = []
+        all_frames = []
         for p in outcars:
             try:
                 images = read(str(p), index=":")
-                best = min(images, key=lambda a: a.get_potential_energy())
-                best.info["run_id"] = make_run_id(root, p)
-                best_frames.append(best)
+                run_id = make_run_id(root, p)
+                for atoms in images:
+                    atoms.info["run_id"] = run_id
+                all_frames.extend(images)
                 if not args.quiet:
-                    e = best.get_potential_energy()
-                    print(f"  {p.relative_to(root)}: {len(images)} frame(s) -> E = {e:.4f} eV")
+                    print(f"  {p.relative_to(root)}: {len(images)} frame(s)")
             except Exception as e:
                 print(f"Warning: Could not read {p}: {e}", file=sys.stderr)
 
-        if not best_frames:
+        if not all_frames:
             print("Error: No frames could be read from any OUTCAR.", file=sys.stderr)
             sys.exit(1)
 
-        write(str(args.output), best_frames, format="extxyz")
+        if args.output is None:
+            output_path = Path(f"all_frames_{len(all_frames)}_frames.xyz")
+
+        write(str(output_path), all_frames, format="extxyz")
+
         if not args.quiet:
-            print(f"Wrote {len(best_frames)} frame(s) to {args.output}")
+            print(f"Wrote {len(all_frames)} frame(s) to {output_path}")
     finally:
         if tee is not None:
             sys.stdout = tee._stream

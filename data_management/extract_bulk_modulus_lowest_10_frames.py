@@ -79,6 +79,15 @@ def _collect_candidates(top_path):
     return candidates
 
 
+def make_run_id(root: Path, outcar_path: Path) -> str:
+    """Create run_id exactly like extract_frames_from_md.py."""
+    try:
+        rel = outcar_path.resolve().relative_to(root.resolve())
+    except ValueError:
+        rel = outcar_path.resolve()
+    return str(rel.parent).replace("/", "_")
+
+
 def process_directory(top_dir, num_frames=10):
     """
     For one directory (e.g. alpha/), find subdirs with OUTCAR, get final energy
@@ -108,6 +117,7 @@ def process_directory(top_dir, num_frames=10):
             images = read(str(outcar), index=":")
             atoms = images[-1]
             atoms.info["comment"] = f"{sub.name}  E = {en:.6f} eV"
+            atoms.info["run_id"] = make_run_id(top_path, outcar)
             frames.append(atoms)
         except Exception as e:
             print(f"Failed to read OUTCAR with ASE: {outcar} ({e})", file=sys.stderr)
