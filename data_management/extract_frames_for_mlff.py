@@ -160,12 +160,12 @@ def find_md_directories(base_path: str) -> List[Tuple[str, str, str]]:
 
 
 def make_run_id(base_path: str, outcar_path: str) -> str:
-    """Create run_id exactly like extract_frames_from_md.py."""
-    try:
-        rel = Path(outcar_path).resolve().relative_to(Path(base_path).resolve())
-    except ValueError:
-        rel = Path(outcar_path).resolve()
-    return str(rel.parent).replace("/", "_")
+    """Full directory path from ~ as run_id."""
+    abs_dir = str(Path(outcar_path).resolve().parent)
+    home = str(Path.home())
+    if abs_dir.startswith(home):
+        return "~" + abs_dir[len(home):]
+    return abs_dir
 
 
 def extract_frames_from_outcar(outcar_path: str, frame_indices: List[int], run_id: str) -> List[Atoms]:

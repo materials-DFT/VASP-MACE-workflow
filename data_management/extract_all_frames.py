@@ -56,12 +56,12 @@ def find_outcars(root: Path) -> list[Path]:
 
 
 def make_run_id(root: Path, outcar_path: Path) -> str:
-    """Create run_id exactly like extract_frames_from_md.py."""
-    try:
-        rel = outcar_path.resolve().relative_to(root.resolve())
-    except ValueError:
-        rel = outcar_path.resolve()
-    return str(rel.parent).replace("/", "_")
+    """Full directory path from ~ as run_id."""
+    abs_dir = str(outcar_path.resolve().parent)
+    home = str(Path.home())
+    if abs_dir.startswith(home):
+        return "~" + abs_dir[len(home):]
+    return abs_dir
 
 
 def main() -> None:

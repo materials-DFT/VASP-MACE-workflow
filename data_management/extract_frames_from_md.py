@@ -64,12 +64,13 @@ class Tee:
 
 def find_outcars(md_dir: Path):
     """Yield (outcar_path, run_id) for each OUTCAR under md_dir."""
+    home = str(Path.home())
     for outcar in sorted(md_dir.rglob("OUTCAR")):
-        try:
-            rel = outcar.relative_to(md_dir)
-        except ValueError:
-            rel = outcar
-        run_id = str(rel.parent).replace("/", "_")
+        abs_dir = str(outcar.resolve().parent)
+        if abs_dir.startswith(home):
+            run_id = "~" + abs_dir[len(home):]
+        else:
+            run_id = abs_dir
         yield outcar, run_id
 
 
