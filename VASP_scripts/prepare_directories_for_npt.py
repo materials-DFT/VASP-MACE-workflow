@@ -11,11 +11,11 @@ This comprehensive script combines three major functionalities:
    - Sets up proper INCAR and KPOINTS files
    - Cleans up unwanted output files
 
-2. NPT Parameter Optimization (from npt_incar_optimizer.py):
-   - Analyzes system composition and properties
-   - Calculates optimal NPT molecular dynamics parameters
-   - Optimizes POTIM, NSW, LANGEVIN_GAMMA, PMASS, etc.
-   - Based on atomic species, temperature, and system size
+2. NPT Parameter Optimization (incorporates npt_incar_optimizer.py):
+   - Mass- and temperature-aware Langevin gamma per species
+   - PMASS and LANGEVIN_GAMMA_L scaled by system size and temperature
+   - POTIM fixed at 1.0 fs; ISTART=1, ICHARG=1 (restart from WAVECAR/CHGCAR)
+   - Tunable via --gamma-ref, --alpha, --beta, --gamma-min, --gamma-max
 
 3. Parallelization Optimization (from optimize_vasp_incar.py):
    - Analyzes system size and k-point density
@@ -64,7 +64,7 @@ DEFAULT_PARAMS = {
     "EDIFF": "1E-5",
     "PREC": "Normal",
     "ALGO": "Very Fast",
-    "NELM": "1000",
+    "NELM": "150",
     "SIGMA": "0.05"
 }
 
@@ -84,7 +84,6 @@ class AtomicSpecies:
     atomic_number: int
     atomic_mass: float
     count: int
-    friction_coefficient: float = 10.0
 
 @dataclass
 class NPTParameters:
@@ -145,53 +144,59 @@ class VASPNPTProcessor:
     NPT parameter optimization, and parallelization optimization.
     """
     
-    # Atomic data for parameter optimization
-    # gamma_opt values calculated using 1/sqrt(m) scaling with O (16 amu, gamma=7.0) as reference
-    # Formula: gamma = 7.0 * sqrt(16/mass)
-    ATOMIC_DATA = {
-        'H': {'Z': 1, 'mass': 1.008, 'gamma_opt': 27.9},
-        'He': {'Z': 2, 'mass': 4.003, 'gamma_opt': 14.0},
-        'Li': {'Z': 3, 'mass': 6.941, 'gamma_opt': 10.6},
-        'Be': {'Z': 4, 'mass': 9.012, 'gamma_opt': 9.3},
-        'B': {'Z': 5, 'mass': 10.811, 'gamma_opt': 8.5},
-        'C': {'Z': 6, 'mass': 12.011, 'gamma_opt': 8.1},
-        'N': {'Z': 7, 'mass': 14.007, 'gamma_opt': 7.5},
-        'O': {'Z': 8, 'mass': 15.999, 'gamma_opt': 7.0},
-        'F': {'Z': 9, 'mass': 18.998, 'gamma_opt': 6.4},
-        'Ne': {'Z': 10, 'mass': 20.180, 'gamma_opt': 6.2},
-        'Na': {'Z': 11, 'mass': 22.990, 'gamma_opt': 5.8},
-        'Mg': {'Z': 12, 'mass': 24.305, 'gamma_opt': 5.7},
-        'Al': {'Z': 13, 'mass': 26.982, 'gamma_opt': 5.4},
-        'Si': {'Z': 14, 'mass': 28.085, 'gamma_opt': 5.3},
-        'P': {'Z': 15, 'mass': 30.974, 'gamma_opt': 5.0},
-        'S': {'Z': 16, 'mass': 32.065, 'gamma_opt': 4.9},
-        'Cl': {'Z': 17, 'mass': 35.453, 'gamma_opt': 4.7},
-        'Ar': {'Z': 18, 'mass': 39.948, 'gamma_opt': 4.4},
-        'K': {'Z': 19, 'mass': 39.098, 'gamma_opt': 4.5},
-        'Ca': {'Z': 20, 'mass': 40.078, 'gamma_opt': 4.4},
-        'Sc': {'Z': 21, 'mass': 44.956, 'gamma_opt': 4.2},
-        'Ti': {'Z': 22, 'mass': 47.867, 'gamma_opt': 4.0},
-        'V': {'Z': 23, 'mass': 50.942, 'gamma_opt': 3.9},
-        'Cr': {'Z': 24, 'mass': 51.996, 'gamma_opt': 3.9},
-        'Mn': {'Z': 25, 'mass': 54.938, 'gamma_opt': 3.8},
-        'Fe': {'Z': 26, 'mass': 55.845, 'gamma_opt': 3.7},
-        'Co': {'Z': 27, 'mass': 58.933, 'gamma_opt': 3.6},
-        'Ni': {'Z': 28, 'mass': 58.693, 'gamma_opt': 3.7},
-        'Cu': {'Z': 29, 'mass': 63.546, 'gamma_opt': 3.5},
-        'Zn': {'Z': 30, 'mass': 65.409, 'gamma_opt': 3.5},
-        'Ga': {'Z': 31, 'mass': 69.723, 'gamma_opt': 3.4},
-        'Ge': {'Z': 32, 'mass': 72.640, 'gamma_opt': 3.3},
-        'As': {'Z': 33, 'mass': 74.922, 'gamma_opt': 3.2},
-        'Se': {'Z': 34, 'mass': 78.960, 'gamma_opt': 3.2},
-        'Br': {'Z': 35, 'mass': 79.904, 'gamma_opt': 3.1},
-        'Kr': {'Z': 36, 'mass': 83.798, 'gamma_opt': 3.1},
+    ATOMIC_DATA: Dict[str, Dict[str, float]] = {
+        'H':  {'Z': 1,  'mass': 1.008},
+        'He': {'Z': 2,  'mass': 4.0026},
+        'Li': {'Z': 3,  'mass': 6.94},
+        'Be': {'Z': 4,  'mass': 9.0122},
+        'B':  {'Z': 5,  'mass': 10.81},
+        'C':  {'Z': 6,  'mass': 12.011},
+        'N':  {'Z': 7,  'mass': 14.007},
+        'O':  {'Z': 8,  'mass': 15.999},
+        'F':  {'Z': 9,  'mass': 18.998},
+        'Ne': {'Z': 10, 'mass': 20.180},
+        'Na': {'Z': 11, 'mass': 22.990},
+        'Mg': {'Z': 12, 'mass': 24.305},
+        'Al': {'Z': 13, 'mass': 26.982},
+        'Si': {'Z': 14, 'mass': 28.085},
+        'P':  {'Z': 15, 'mass': 30.974},
+        'S':  {'Z': 16, 'mass': 32.06},
+        'Cl': {'Z': 17, 'mass': 35.45},
+        'Ar': {'Z': 18, 'mass': 39.948},
+        'K':  {'Z': 19, 'mass': 39.0983},
+        'Ca': {'Z': 20, 'mass': 40.078},
+        'Sc': {'Z': 21, 'mass': 44.9559},
+        'Ti': {'Z': 22, 'mass': 47.867},
+        'V':  {'Z': 23, 'mass': 50.9415},
+        'Cr': {'Z': 24, 'mass': 51.9961},
+        'Mn': {'Z': 25, 'mass': 54.938},
+        'Fe': {'Z': 26, 'mass': 55.845},
+        'Co': {'Z': 27, 'mass': 58.933},
+        'Ni': {'Z': 28, 'mass': 58.693},
+        'Cu': {'Z': 29, 'mass': 63.546},
+        'Zn': {'Z': 30, 'mass': 65.38},
+        'Ga': {'Z': 31, 'mass': 69.723},
+        'Ge': {'Z': 32, 'mass': 72.63},
+        'As': {'Z': 33, 'mass': 74.9216},
+        'Se': {'Z': 34, 'mass': 78.971},
+        'Br': {'Z': 35, 'mass': 79.904},
+        'Kr': {'Z': 36, 'mass': 83.798},
     }
     
-    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True, nsw: int = 10000):
+    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True, nsw: int = 10000,
+                 gamma_ref: float = 2.0, alpha: float = 0.6, beta: float = 0.5,
+                 gamma_min: float = 0.5, gamma_max: float = 15.0,
+                 enforce_monotone: bool = True):
         """Initialize the processor."""
         self.cluster_config = cluster_config
         self.verbose = verbose
-        self.nsw = nsw  # Default number of MD steps
+        self.nsw = nsw
+        self.gamma_ref = gamma_ref
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma_min = gamma_min
+        self.gamma_max = gamma_max
+        self.enforce_monotone = enforce_monotone
         self.processed_dirs = []
         self.skipped_dirs = []
         self.systems_analyzed = []
@@ -247,19 +252,17 @@ class VASPNPTProcessor:
                     atomic_info = self.ATOMIC_DATA[symbol]
                     species_list.append(AtomicSpecies(
                         symbol=symbol,
-                        atomic_number=atomic_info['Z'],
-                        atomic_mass=atomic_info['mass'],
-                        count=count,
-                        friction_coefficient=atomic_info['gamma_opt']
+                        atomic_number=int(atomic_info['Z']),
+                        atomic_mass=float(atomic_info['mass']),
+                        count=count
                     ))
                 else:
-                    # Default values for unknown species
+                    self.log(f"Unknown species '{symbol}' - using fallback mass=20, Z=0", "WARN")
                     species_list.append(AtomicSpecies(
                         symbol=symbol,
-                        atomic_number=1,
-                        atomic_mass=10.0,
-                        count=count,
-                        friction_coefficient=10.0
+                        atomic_number=0,
+                        atomic_mass=20.0,
+                        count=count
                     ))
             
             return species_list, lattice
@@ -371,60 +374,106 @@ class VASPNPTProcessor:
             
         return params
     
-    def calculate_optimal_npt_parameters(self, species_list: List[AtomicSpecies], 
-                                        temperature: float, lattice: np.ndarray,
-                                        existing_params: Dict[str, Any]) -> NPTParameters:
-        """Calculate optimal NPT parameters based on system analysis."""
-        # Calculate system properties
+    # --------------- Physics heuristics from VASPNPTOptimizer --------------- #
+
+    @staticmethod
+    def _clamp(x: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, x))
+
+    def _compute_langevin_gammas(
+        self,
+        species_list: List[AtomicSpecies],
+        temperature: float,
+        gamma_ref: float = 2.0,
+        alpha: float = 0.6,
+        beta: float = 0.5,
+        gamma_min: float = 0.5,
+        gamma_max: float = 15.0,
+        enforce_monotone: bool = True
+    ) -> List[float]:
+        """
+        Per-species gamma that increases for lighter atoms and grows with T.
+        Uses composition-weighted average mass as reference.
+        """
         total_atoms = sum(s.count for s in species_list)
-        cell_volume = abs(np.linalg.det(lattice))
-        density = sum(s.count * s.atomic_mass for s in species_list) / cell_volume
-        
-        # Calculate average atomic mass
-        avg_mass = sum(s.count * s.atomic_mass for s in species_list) / total_atoms
-        
-        # Calculate optimal time step based on lightest atom
-        # Standard MD timesteps: 0.5 fs if H present, 1.0 fs otherwise (safe default)
-        # 2.0 fs possible for heavy systems but 1.0 fs is safer
-        min_mass = min(s.atomic_mass for s in species_list)
-        if min_mass < 2.0:  # Hydrogen present
-            optimal_potim = 0.5
-        else:
-            optimal_potim = 1.0
-        
-        # Calculate optimal friction coefficients for each species
-        # Scale with temperature: higher T may need slightly higher friction for stability
-        langevin_gamma = []
-        for species in species_list:
-            temp_adjustment = max(0.5, min(2.0, temperature / 300.0))
-            gamma = species.friction_coefficient * temp_adjustment
-            langevin_gamma.append(gamma)
-        
-        # PMASS: fictitious mass for Parrinello-Rahman barostat
-        # Standard value ~1000 works for most systems
-        optimal_pmass = 1000
-        
-        # LANGEVIN_GAMMA_L: friction for lattice degrees of freedom
-        # Standard value ~10 ps^-1, independent of system size
-        optimal_gamma_l = 10.0
-        
-        # NSW: number of MD steps (10000 steps × 1 fs = 10 ps simulation)
-        # Use value from processor (set via --nsw argument) or existing INCAR
-        optimal_nsw = existing_params.get('NSW', self.nsw) if existing_params.get('NSW') else self.nsw
-        
-        # Create NPT parameters object
-        npt_params = NPTParameters(
-            tebeg=existing_params.get('TEBEG'),
-            teend=existing_params.get('TEEND'),
-            nsw=int(optimal_nsw),
-            potim=optimal_potim,
-            langevin_gamma=langevin_gamma,
-            langevin_gamma_l=optimal_gamma_l,
-            pmass=optimal_pmass,
-            ediffg=existing_params.get('EDIFFG', -5e-2),
-            isym=existing_params.get('ISYM', 0)
+        avg_mass = sum(s.atomic_mass * s.count for s in species_list) / max(1, total_atoms)
+        m_ref = avg_mass
+
+        temp_factor = (max(1e-6, temperature) / 300.0) ** beta
+
+        raw = []
+        for s in species_list:
+            g = gamma_ref * (m_ref / s.atomic_mass) ** alpha * temp_factor
+            g = self._clamp(g, gamma_min, gamma_max)
+            raw.append(g)
+
+        if not enforce_monotone:
+            return raw
+
+        masses = [s.atomic_mass for s in species_list]
+        gammas = raw[:]
+        for _ in range(len(gammas)):
+            changed = False
+            for i in range(1, len(gammas)):
+                if masses[i] > masses[i-1] and gammas[i] > gammas[i-1]:
+                    new_val = 0.5 * (gammas[i] + gammas[i-1])
+                    gammas[i] = min(gammas[i-1], new_val)
+                    changed = True
+            if not changed:
+                break
+        gammas = [self._clamp(g, gamma_min, gamma_max) for g in gammas]
+        return gammas
+
+    def _compute_pmass(self, natoms: int, temperature: float) -> float:
+        """PMASS scaled by system size and temperature, clamped to [800, 5000]."""
+        size_factor = self._clamp(natoms / 50.0, 0.5, 3.0)
+        t_factor = self._clamp(temperature / 300.0, 0.5, 2.0)
+        pmass = 1000.0 * size_factor * t_factor
+        return float(self._clamp(pmass, 800.0, 5000.0))
+
+    def _compute_gamma_l(self, natoms: int) -> float:
+        """Lattice friction scaled modestly by system size, clamped to [1, 10]."""
+        size_factor = self._clamp(natoms / 50.0, 0.5, 3.0)
+        gamma_l = 3.0 * size_factor
+        return float(self._clamp(gamma_l, 1.0, 10.0))
+
+    # -------------------------------------------------------------------- #
+
+    def calculate_optimal_npt_parameters(self, species_list: List[AtomicSpecies],
+                                         temperature: float, lattice: np.ndarray,
+                                         existing_params: Dict[str, Any]) -> NPTParameters:
+        """Calculate optimal NPT parameters using mass- and T-aware heuristics."""
+        total_atoms = sum(s.count for s in species_list)
+
+        langevin_gamma = self._compute_langevin_gammas(
+            species_list=species_list,
+            temperature=temperature,
+            gamma_ref=self.gamma_ref,
+            alpha=self.alpha,
+            beta=self.beta,
+            gamma_min=self.gamma_min,
+            gamma_max=self.gamma_max,
+            enforce_monotone=self.enforce_monotone
         )
-        
+
+        pmass = self._compute_pmass(total_atoms, temperature)
+        gamma_l = self._compute_gamma_l(total_atoms)
+
+        npt_params = NPTParameters(
+            ibrion=0,
+            mdalgo=3,
+            isif=3,
+            tebeg=temperature,
+            teend=temperature,
+            nsw=self.nsw,
+            potim=1.0,
+            langevin_gamma=langevin_gamma,
+            langevin_gamma_l=gamma_l,
+            pmass=pmass,
+            ediffg=float(existing_params.get('EDIFFG', -5e-2)),
+            isym=int(existing_params.get('ISYM', 0))
+        )
+
         return npt_params
     
     def calculate_optimal_parallelization(self, atoms: int, kpoints: int) -> Dict[str, int]:
@@ -512,6 +561,10 @@ class VASPNPTProcessor:
             if 'KPAR' in all_params:
                 del all_params['KPAR']
             
+            # Force restart from WAVECAR and CHGCAR
+            all_params['ISTART'] = 1
+            all_params['ICHARG'] = 1
+
             # Add temperature parameters
             all_params['TEBEG'] = temp
             all_params['TEEND'] = temp
@@ -522,9 +575,9 @@ class VASPNPTProcessor:
                 'MDALGO': npt_params.mdalgo,
                 'ISIF': npt_params.isif,
                 'NSW': npt_params.nsw,
-                'POTIM': npt_params.potim,
-                'LANGEVIN_GAMMA': ' '.join(f'{g:.2f}' for g in npt_params.langevin_gamma),
-                'LANGEVIN_GAMMA_L': f'{npt_params.langevin_gamma_l:.2f}',
+                'POTIM': f'{npt_params.potim:.3f}',
+                'LANGEVIN_GAMMA': ' '.join(f'{g:.3f}' for g in npt_params.langevin_gamma),
+                'LANGEVIN_GAMMA_L': f'{npt_params.langevin_gamma_l:.3f}',
                 'PMASS': f'{npt_params.pmass:.0f}',
                 'EDIFFG': npt_params.ediffg,
                 'ISYM': npt_params.isym
@@ -540,18 +593,19 @@ class VASPNPTProcessor:
                 'LSCALU': '.FALSE.'
             })
             
-            # Ensure ALGO and PREC are set correctly (override any existing values)
+            # Ensure critical parameters are set correctly (override any existing values)
             all_params['ALGO'] = 'Very Fast'
             all_params['PREC'] = 'Normal'
+            all_params['EDIFF'] = 1E-5  # Suitable for MD (tighter not needed)
             
             # Write INCAR file with organized sections
             with open(incar_path, 'w') as f:
                 # Header
                 f.write("System = Optimized NPT Molecular Dynamics\n")
-                f.write(f"# Parameters optimized for {temp}K by VASP NPT Processor\n\n")
+                f.write(f"# Parameters optimized for {temp}K (mass- and T-aware Langevin)\n\n")
                 
                 # Starting parameters
-                f.write("Starting parameters for this run:\n")
+                f.write("Starting parameters:\n")
                 for key in ['ISTART', 'ICHARG']:
                     if key in all_params:
                         f.write(f"{key} = {all_params[key]}\n")
@@ -560,14 +614,15 @@ class VASPNPTProcessor:
                 # Electronic relaxation
                 f.write("Electronic Relaxation:\n")
                 electronic_keys = ['PREC', 'ENCUT', 'NELMIN', 'NELM', 'EDIFF', 'LREAL', 
-                                 'ISPIN', 'MAGMOM', 'ALGO', 'METAGGA', 'LMIXTAU', 'LASPH', 'LDIAG']
+                                 'ISPIN', 'MAGMOM', 'ALGO', 'METAGGA', 'LMIXTAU', 'LASPH', 'LDIAG',
+                                 'ISMEAR', 'SIGMA', 'LORBIT']
                 for key in electronic_keys:
                     if key in all_params:
                         f.write(f"{key} = {all_params[key]}\n")
                 f.write("\n")
                 
                 # Ionic Molecular Dynamics
-                f.write("Ionic Molecular Dynamics:\n")
+                f.write("Ionic Molecular Dynamics (NPT, Langevin):\n")
                 md_keys = ['NSW', 'IBRION', 'EDIFFG', 'ISIF', 'POTIM', 'ISYM', 
                           'MDALGO', 'LANGEVIN_GAMMA', 'LANGEVIN_GAMMA_L', 'PMASS']
                 for key in md_keys:
@@ -813,6 +868,20 @@ Examples:
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--quiet", action="store_true", help="Suppress verbose output")
     
+    # NPT optimizer expert knobs
+    parser.add_argument("--gamma-ref", type=float, default=2.0,
+                        help="Reference gamma (ps^-1) at 300 K for avg mass. Default 2.0")
+    parser.add_argument("--alpha", type=float, default=0.6,
+                        help="Mass exponent: gamma ~ (m_ref/m)^alpha. Default 0.6")
+    parser.add_argument("--beta", type=float, default=0.5,
+                        help="Temperature exponent: gamma ~ (T/300)^beta. Default 0.5")
+    parser.add_argument("--gamma-min", type=float, default=0.5,
+                        help="Lower clamp for species gamma (ps^-1). Default 0.5")
+    parser.add_argument("--gamma-max", type=float, default=15.0,
+                        help="Upper clamp for species gamma (ps^-1). Default 15.0")
+    parser.add_argument("--no-monotone", action="store_true",
+                        help="Do not enforce gamma decreasing with mass.")
+    
     args = parser.parse_args()
     
     # Get cluster configuration
@@ -830,7 +899,17 @@ Examples:
         cluster_config.max_ncore = args.max_ncore
     
     # Create processor
-    processor = VASPNPTProcessor(cluster_config, verbose=args.verbose and not args.quiet, nsw=args.nsw)
+    processor = VASPNPTProcessor(
+        cluster_config,
+        verbose=args.verbose and not args.quiet,
+        nsw=args.nsw,
+        gamma_ref=args.gamma_ref,
+        alpha=args.alpha,
+        beta=args.beta,
+        gamma_min=args.gamma_min,
+        gamma_max=args.gamma_max,
+        enforce_monotone=(not args.no_monotone)
+    )
     
     # Parse temperatures and files to delete
     temperatures = processor.parse_temps(args.temps)
