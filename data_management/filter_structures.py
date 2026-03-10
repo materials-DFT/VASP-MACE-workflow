@@ -15,7 +15,11 @@ if not os.path.isdir(xyz_dir):
     print(f"Error: '{xyz_dir}' is not a valid directory")
     sys.exit(1)
 
-xyz_files = sorted(glob.glob(os.path.join(xyz_dir, "*.xyz")))
+OUTPUT_PREFIXES = ("filtered_",)
+xyz_files = sorted(
+    f for f in glob.glob(os.path.join(xyz_dir, "*.xyz"))
+    if not os.path.basename(f).startswith(OUTPUT_PREFIXES)
+)
 if not xyz_files:
     print(f"No .xyz files found in '{xyz_dir}'")
     sys.exit(1)
@@ -89,17 +93,46 @@ def has_close_contacts(species, positions, lattice, pbc, cutoff):
     return len(dists) > 0
 
 
+def frame_fingerprint(frame):
+    """Hashable fingerprint for deduplication: (natoms, sorted symbols+positions, cell)."""
+    sp = frame["species"]
+    pos = frame["positions"]
+    lat = frame["lattice"]
+    n = len(sp)
+    order = sorted(range(n), key=lambda i: (sp[i], pos[i][0], pos[i][1], pos[i][2]))
+    rounded = np.round(pos[order], 4)
+    return (
+        n,
+        tuple(sp[i] for i in order),
+        tuple(map(tuple, rounded)),
+        tuple(map(tuple, np.round(lat, 4))) if lat is not None else None,
+    )
+
+
 print("Counting structures...", flush=True)
 all_frames = []
+seen_fps = set()
+n_total = 0
+n_dup = 0
 for fpath in xyz_files:
     try:
         frames = parse_xyz_frames(fpath)
-        all_frames.extend(frames)
+        for fr in frames:
+            n_total += 1
+            fp = frame_fingerprint(fr)
+            if fp in seen_fps:
+                n_dup += 1
+                continue
+            seen_fps.add(fp)
+            all_frames.append(fr)
     except Exception as e:
         print(f"ERROR reading {os.path.basename(fpath)}: {e}")
 
 total_structure_count = len(all_frames)
-print(f"Found {total_structure_count} structures in {len(xyz_files)} files.\n", flush=True)
+print(f"Parsed {n_total} structures from {len(xyz_files)} files.", flush=True)
+if n_dup:
+    print(f"Removed {n_dup} duplicate structures.")
+print(f"Unique structures to filter: {total_structure_count}\n", flush=True)
 
 raw_blocks_15 = []
 raw_blocks_12 = []
