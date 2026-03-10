@@ -35,6 +35,41 @@ def list_job_ids(user: str) -> List[str]:
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
 
+
+def list_jobs_detailed(user: str) -> List[Dict[str, Optional[str]]]:
+    """
+    Return a list of job dicts for the given user using a *single* squeue call.
+    Each dict contains: id, state, name, reason, runtime, workdir.
+    """
+    fmt = "%A|%T|%j|%R|%M|%Z"
+    base = ["squeue", "-u", user, "-h", "-o", fmt]
+    code, out, err = run(base)
+    if code != 0:
+        print(f"[ERROR] squeue (detailed) failed: {err}", file=sys.stderr)
+        return []
+
+    jobs: List[Dict[str, Optional[str]]] = []
+    for line in out.splitlines():
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        parts = line.split("|", 5)
+        if len(parts) != 6:
+            # Unexpected format; skip
+            continue
+        jid, state, name, reason, runtime, workdir = (p.strip() or None for p in parts)
+        jobs.append(
+            {
+                "id": jid,
+                "state": state,
+                "name": name,
+                "reason": reason,
+                "runtime": runtime,
+                "workdir": workdir,
+            }
+        )
+    return jobs
+
 def scontrol_show_job(jobid: str) -> Optional[str]:
     code, out, err = run(["scontrol", "show", "job", jobid])
     if code != 0 or not out:
@@ -112,33 +147,46 @@ def main():
     for r in roots:
         print(f"  - {r}")
 
-    jobids = list_job_ids(user)
-    if not jobids:
+    jobs = list_jobs_detailed(user)
+    if not jobs:
         print("No jobs found for user.")
         return
 
-    print(f"\nFound {len(jobids)} job(s) for user `{user}`.\n")
+    print(f"\nFound {len(jobs)} job(s) for user `{user}`.\n")
 
     # Consider RUNNING, COMPLETING, and PENDING by default
     target_states = {"RUNNING", "COMPLETING", "PENDING"}
 
     to_cancel: List[Tuple[str, str, str, str]] = []  # (jid, state, name, dir)
 
-    for jid in jobids:
-        raw = scontrol_show_job(jid)
-        if not raw:
-            print(f"Job {jid}: unable to retrieve details via scontrol (skipping).")
+    for job in jobs:
+        jid = job.get("id")
+        if not jid:
             continue
 
-        meta = parse_job_info(raw)
-        state = (meta.get("state") or "").upper()
-        name = meta.get("name") or "(no-name)"
-        stdout = canonical(meta.get("stdout"))
-        workdir = canonical(meta.get("workdir"))
-        runtime = job_runtime(jid) or "N/A"
-        reason = meta.get("reason")
+        state = (job.get("state") or "").upper()
+        name = job.get("name") or "(no-name)"
+        runtime = job.get("runtime") or "N/A"
+        reason = job.get("reason")
 
-        job_dir = stdout.parent if stdout else workdir
+        # Prefer the workdir from squeue; if missing, fall back to scontrol once.
+        workdir = canonical(job.get("workdir"))
+        stdout = None
+        job_dir = workdir
+
+        if job_dir is None:
+            raw = scontrol_show_job(jid)
+            if not raw:
+                print(f"Job {jid} | {name} | State={state} | Runtime={runtime} | Dir=(unknown) -> skipping (no directory)")
+                continue
+            meta = parse_job_info(raw)
+            stdout = canonical(meta.get("stdout"))
+            workdir_fallback = canonical(meta.get("workdir"))
+            job_dir = stdout.parent if stdout else workdir_fallback
+            # If squeue did not provide a reason, try to get it from scontrol
+            if not reason:
+                reason = meta.get("reason")
+
         job_dir_str = str(job_dir) if job_dir else "(unknown)"
 
         # Only look at RUNNING/COMPLETING/PENDING
