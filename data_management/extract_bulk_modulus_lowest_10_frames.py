@@ -25,15 +25,16 @@ except ImportError:
 
 
 # ============================================================================
-# Logging (tee to stdout + log file) — same style as extract_frames_for_mlff.py
+# Logging (tee to stdout + log file) — same style as other extract_* scripts
 # ============================================================================
 
 class Tee:
     """Write to both stdout and a log file."""
+
     def __init__(self, log_path, stream=None):
         self._stream = stream if stream is not None else sys.stdout
         self._log_path = log_path
-        self._file = open(log_path, 'w', encoding='utf-8')
+        self._file = open(log_path, "w", encoding="utf-8")
 
     def write(self, data):
         self._stream.write(data)
@@ -48,23 +49,13 @@ class Tee:
         self._file.close()
 
 
-def get_final_energy_from_outcar(outcar_path):
-    """Extract final TOTEN (eV) from OUTCAR. Returns None if not found. Lightweight (no ASE)."""
-    pattern = re.compile(r"free\s+energy\s+TOTEN\s*=\s*([-\d.Ee+]+)\s*eV")
-    last_energy = None
-    try:
-        with open(outcar_path, "r") as f:
-            for line in f:
-                m = pattern.search(line)
-                if m:
-                    last_energy = float(m.group(1))
-        return last_energy
-    except (OSError, ValueError):
-        return None
-
-
 def _collect_candidates(top_path):
-    """Direct children that have OUTCAR (OUTCAR only)."""
+    """
+    Direct children that have OUTCAR (OUTCAR only).
+
+    For consistency with other extraction scripts, use ASE to read the
+    OUTCAR and take the potential energy of the final ionic step.
+    """
     candidates = []
     for sub in sorted(top_path.iterdir()):
         if not sub.is_dir():
@@ -72,8 +63,16 @@ def _collect_candidates(top_path):
         outcar = sub / "OUTCAR"
         if not outcar.is_file():
             continue
-        energy = get_final_energy_from_outcar(outcar)
-        if energy is None:
+        try:
+            images = read(str(outcar), index=":")
+        except Exception:
+            continue
+        if not images:
+            continue
+        last = images[-1]
+        try:
+            energy = float(last.get_potential_energy())
+        except Exception:
             continue
         candidates.append((sub, energy))
     return candidates
@@ -116,7 +115,6 @@ def process_directory(top_dir, num_frames=10):
         try:
             images = read(str(outcar), index=":")
             atoms = images[-1]
-            atoms.info["comment"] = f"{sub.name}  E = {en:.6f} eV"
             atoms.info["run_id"] = make_run_id(top_path, outcar)
             frames.append(atoms)
         except Exception as e:

@@ -47,8 +47,57 @@ def _energy_from_comment(comment):
     return None
 
 
-def find_energy_per_atom(atoms_list):
-    """Extract energy per atom for each structure. Tries common info keys and comment fallback."""
+def _parse_extxyz_energies(path):
+    """
+    Parse total energies from extxyz header lines.
+    Prefer 'energy='; fall back to 'free_energy=' when needed.
+    Returns list of floats or None (one entry per frame).
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    with open(path) as f:
+        lines = [ln for ln in f]
+    i = 0
+    energies = []
+    while i < len(lines):
+        try:
+            n_atoms = int(lines[i].strip())
+        except ValueError:
+            break
+        if i + 1 >= len(lines):
+            break
+        header = lines[i + 1]
+        # energy=... (but not free_energy)
+        m = re.search(r"(?<!free_)energy\s*=\s*([-\d.Ee+]+)", header)
+        if not m:
+            m = re.search(r"free_energy\s*=\s*([-\d.Ee+]+)", header)
+        energies.append(float(m.group(1)) if m else None)
+        i += 2 + n_atoms
+    return energies
+
+
+def find_energy_per_atom(atoms_list, xyz_path=None):
+    """
+    Extract energy per atom for each structure.
+    Prefer energies parsed from extxyz headers (style B), with
+    fallback to info keys and comment parsing for older files.
+    """
+    # Header-based energies (style B) if we have the file path
+    header_energies = None
+    if xyz_path is not None:
+        header_energies = _parse_extxyz_energies(xyz_path)
+        if header_energies and len(header_energies) == len(atoms_list):
+            vals = []
+            for atoms, E in zip(atoms_list, header_energies):
+                n = len(atoms)
+                if n == 0 or E is None:
+                    continue
+                vals.append(E / n)
+            if vals:
+                return np.array(vals)
+
+    # Fallback: older style where energies live in info/comment
     e_per_atom = []
     for atoms in atoms_list:
         n = len(atoms)
@@ -57,7 +106,10 @@ def find_energy_per_atom(atoms_list):
         total_energy = None
         for key in ENERGY_KEYS:
             if key in atoms.info:
-                total_energy = float(atoms.info[key])
+                try:
+                    total_energy = float(atoms.info[key])
+                except (TypeError, ValueError):
+                    total_energy = None
                 break
         if total_energy is None:
             for k, v in atoms.info.items():
@@ -204,8 +256,8 @@ def main():
     n_frames = len(atoms_list)
     print(f"Read {n_frames} structure(s) from {xyz_path}")
 
-    # Energy per atom
-    e_per_atom = find_energy_per_atom(atoms_list)
+    # Energy per atom and force magnitudes
+    e_per_atom = find_energy_per_atom(atoms_list, xyz_path=xyz_path)
     force_mags = find_force_magnitudes(atoms_list, xyz_path=xyz_path)
 
     if e_per_atom.size == 0:
@@ -223,7 +275,13 @@ def main():
     # (0,0): energy per atom histogram
     if e_per_atom.size > 0:
         ax = axes[0, 0]
-        ax.hist(e_per_atom, bins=min(80, max(20, len(e_per_atom) // 5)), color="steelblue", edgecolor="white", alpha=0.85)
+        ax.hist(
+            e_per_atom,
+            bins=min(80, max(20, len(e_per_atom) // 5)),
+            color="steelblue",
+            edgecolor="white",
+            alpha=0.85,
+        )
         ax.set_xlabel("Energy per atom (eV)")
         ax.set_ylabel("Count")
         ax.set_title(f"Energy per atom (n={len(e_per_atom)})")
