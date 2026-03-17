@@ -35,7 +35,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from ase.io import read, write
+from ase.io import iread, write
 
 
 # =============================================================================
@@ -80,11 +80,31 @@ def select_mid_two(atoms_list):
     if n == 0:
         return [], []
     if n == 1:
-        return [0], [atoms_list[0], atoms_list[0]]
+        return [0, 0], [atoms_list[0], atoms_list[0]]
     i, j = n // 3, 2 * n // 3
     if i == j:
         j = min(j + 1, n - 1)
     return [i, j], [atoms_list[i], atoms_list[j]]
+
+
+def count_frames(outcar: Path) -> int:
+    """Count frames in an OUTCAR trajectory without storing them all."""
+    n = 0
+    for _ in iread(outcar, index=":"):
+        n += 1
+    return n
+
+
+def read_two_frames(outcar: Path, i: int, j: int):
+    """Read frames i and j from OUTCAR using a streaming iterator."""
+    want = {i, j}
+    got = {}
+    for k, a in enumerate(iread(outcar, index=":")):
+        if k in want:
+            got[k] = a
+            if len(got) == len(want):
+                break
+    return [got[i], got[j]] if i in got and j in got else []
 
 
 def run_extraction(md_dir: Path, out_path: Path):
@@ -107,23 +127,42 @@ def run_extraction(md_dir: Path, out_path: Path):
     print(f"Found {len(outcars_list)} OUTCAR(s)")
     print()
 
-    all_atoms = []
     processed = 0
     skipped = 0
+    frames_written = 0
+    first_write = True
+
+    # Avoid accumulating all frames in memory (and avoid mixing with stale outputs).
+    try:
+        out_path.unlink()
+    except FileNotFoundError:
+        pass
 
     for idx, (outcar, run_id) in enumerate(outcars_list):
         try:
-            traj = read(outcar, index=":")
+            n_frames = count_frames(outcar)
         except Exception as e:
             print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: {e}")
             skipped += 1
             continue
-        if not isinstance(traj, list):
-            traj = [traj]
-        n_frames = len(traj)
-        indices, two = select_mid_two(traj)
-        if not two:
+
+        if n_frames <= 0:
             print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: no frames")
+            skipped += 1
+            continue
+
+        i, j = n_frames // 3, 2 * n_frames // 3
+        if i == j:
+            j = min(j + 1, n_frames - 1)
+
+        try:
+            two = read_two_frames(outcar, i, j)
+        except Exception as e:
+            print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: {e}")
+            skipped += 1
+            continue
+        if not two:
+            print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: could not read frames")
             skipped += 1
             continue
 
@@ -139,28 +178,29 @@ def run_extraction(md_dir: Path, out_path: Path):
         except (AttributeError, RuntimeError):
             e_str = ""
         print(f"[{idx + 1}/{len(outcars_list)}] {rel_path}")
-        print(f"  Frames: {n_frames}  ->  extracting indices {indices[0]}, {indices[1]} (1/3, 2/3){e_str}")
+        print(f"  Frames: {n_frames}  ->  extracting indices {i}, {j} (1/3, 2/3){e_str}")
         print(f"  run_id: {run_id}")
         print()
 
         for a in two:
             a.info["run_id"] = run_id
-            all_atoms.append(a)
+            write(out_path, a, format="extxyz", append=(not first_write))
+            first_write = False
+            frames_written += 1
         processed += 1
 
-    if not all_atoms:
+    if frames_written == 0:
         raise SystemExit("No frames collected. Check that OUTCARs exist under --md-dir.")
 
     print("=" * 80)
     print("Writing output...")
-    write(out_path, all_atoms, format="extxyz")
-    print(f"✓ Written {len(all_atoms)} frames from {processed} calculations to {out_path}")
+    print(f"✓ Written {frames_written} frames from {processed} calculations to {out_path}")
     print()
     print("Extraction statistics:")
     print(f"  OUTCARs found:    {len(outcars_list)}")
     print(f"  Processed:        {processed}")
     print(f"  Skipped:          {skipped}")
-    print(f"  Total frames:     {len(all_atoms)}")
+    print(f"  Total frames:     {frames_written}")
     print()
 
 
