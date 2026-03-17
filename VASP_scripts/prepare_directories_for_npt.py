@@ -19,14 +19,17 @@ This comprehensive script combines three major functionalities:
 
 3. Parallelization Optimization (from optimize_vasp_incar.py):
    - Analyzes system size and k-point density
-   - (REMOVED) This script no longer calculates or modifies NCORE/NPAR/NSIM/KPAR.
+   - Calculates optimal NCORE, NPAR, NSIM parameters
+   - Note: KPAR is not calculated and will be removed from INCAR if present
+   - Supports multiple cluster configurations
+   - Ensures proper core utilization
 
 Usage:
     python3 prepare_directories_for_npt.py <directory_path> [options]
 
 Examples:
     python3 prepare_directories_for_npt.py /path/to/structures
-    python3 prepare_directories_for_npt.py . --temps 300,500,700
+    python3 prepare_directories_for_npt.py . --temps 300,500,700 --cluster medium
     python3 prepare_directories_for_npt.py /data/vasp --dry-run --backup
 
 Author: AI Assistant
@@ -116,7 +119,24 @@ class SystemInfo:
     kpoint_grid: Tuple[int, int, int]
     species_list: List[AtomicSpecies]
     lattice: np.ndarray
+    current_ncore: Optional[int] = None
+    current_npar: Optional[int] = None
+    current_kpar: Optional[int] = None
+    current_nsim: Optional[int] = None
+    optimal_ncore: Optional[int] = None
+    optimal_npar: Optional[int] = None
+    optimal_kpar: Optional[int] = None
+    optimal_nsim: Optional[int] = None
     optimal_npt_params: Optional[NPTParameters] = None
+
+@dataclass
+class ClusterConfig:
+    """Cluster configuration parameters."""
+    name: str
+    total_cores: int
+    cores_per_node: int
+    nodes: int
+    max_ncore: int  # Maximum recommended NCORE value
 
 class VASPNPTProcessor:
     """
@@ -163,11 +183,12 @@ class VASPNPTProcessor:
         'Kr': {'Z': 36, 'mass': 83.798},
     }
     
-    def __init__(self, verbose: bool = True, nsw: int = 10000,
+    def __init__(self, cluster_config: ClusterConfig, verbose: bool = True, nsw: int = 10000,
                  gamma_ref: float = 2.0, alpha: float = 0.6, beta: float = 0.5,
                  gamma_min: float = 0.5, gamma_max: float = 15.0,
                  enforce_monotone: bool = True):
         """Initialize the processor."""
+        self.cluster_config = cluster_config
         self.verbose = verbose
         self.nsw = nsw
         self.gamma_ref = gamma_ref
@@ -331,6 +352,10 @@ class VASPNPTProcessor:
                         parts = line.split('=', 1)
                         key = parts[0].strip()
                         value_str = parts[1].strip()
+
+                        # Skip KPAR - remove it if found
+                        if key.upper() == 'KPAR':
+                            continue
                         
                         # Handle different value types
                         try:
@@ -450,6 +475,74 @@ class VASPNPTProcessor:
         )
 
         return npt_params
+
+    def calculate_optimal_parallelization(self, atoms: int, kpoints: int) -> Dict[str, int]:
+        """Calculate optimal parallelization parameters based on system characteristics."""
+        total_cores = self.cluster_config.total_cores
+
+        # Determine system size category
+        if atoms <= 50:
+            system_size = "small"
+        elif atoms <= 100:
+            system_size = "medium"
+        else:
+            system_size = "large"
+
+        # Calculate optimal parameters based on system size and k-point density
+        # Note: KPAR calculation is disabled - KPAR will be removed from INCAR if present
+        if system_size == "small":
+            if kpoints >= 64:
+                # optimal_kpar = min(8, kpoints // 8)  # KPAR calculation disabled
+                optimal_ncore = min(8, total_cores // 2)
+                optimal_npar = total_cores // optimal_ncore
+            else:
+                # optimal_kpar = min(4, kpoints // 4)  # KPAR calculation disabled
+                optimal_ncore = min(4, total_cores // 4)
+                optimal_npar = total_cores // optimal_ncore
+
+        elif system_size == "medium":
+            if kpoints >= 64:
+                # optimal_kpar = min(8, kpoints // 8)  # KPAR calculation disabled
+                optimal_ncore = min(4, total_cores // 4)
+                optimal_npar = total_cores // optimal_ncore
+            else:
+                # optimal_kpar = min(4, kpoints // 4)  # KPAR calculation disabled
+                optimal_ncore = min(4, total_cores // 4)
+                optimal_npar = total_cores // optimal_ncore
+
+        else:  # large systems
+            if kpoints >= 64:
+                # optimal_kpar = min(4, kpoints // 16)  # KPAR calculation disabled
+                optimal_ncore = min(2, total_cores // 8)
+                optimal_npar = total_cores // optimal_ncore
+            else:
+                # optimal_kpar = min(2, kpoints // 9)  # KPAR calculation disabled
+                optimal_ncore = min(2, total_cores // 8)
+                optimal_npar = total_cores // optimal_ncore
+
+        # Ensure NSIM is always set to 4 for optimal band parallelization
+        optimal_nsim = 4
+
+        # Validate that NCORE × NPAR = total_cores
+        if optimal_ncore * optimal_npar != total_cores:
+            optimal_npar = total_cores // optimal_ncore
+            if optimal_ncore * optimal_npar != total_cores:
+                self.log(f"Warning: Could not achieve exact core matching for {atoms} atoms", "WARNING")
+
+        # KPAR calculation and validation disabled
+        # optimal_kpar = min(optimal_kpar, kpoints)
+
+        # Ensure all parameters are reasonable
+        optimal_ncore = max(1, min(optimal_ncore, self.cluster_config.max_ncore))
+        optimal_npar = max(1, optimal_npar)
+        # optimal_kpar = max(1, optimal_kpar)  # KPAR validation disabled
+
+        return {
+            'ncore': optimal_ncore,
+            'npar': optimal_npar,
+            # 'kpar': optimal_kpar,  # KPAR not returned
+            'nsim': optimal_nsim
+        }
     
     def write_kpoints(self, kpoints_path: str):
         """Write standard KPOINTS file."""
@@ -457,11 +550,16 @@ class VASPNPTProcessor:
             f.write(KPOINTS_CONTENT)
     
     def write_or_update_incar(self, incar_path: str, params: Dict[str, Any], 
-                             temp: int, npt_params: NPTParameters):
+                             temp: int, npt_params: NPTParameters,
+                             parallelization_params: Dict[str, int]):
         """Write optimized INCAR file with all parameters."""
         try:
             # Prepare all parameters
             all_params = params.copy()
+
+            # Remove KPAR if present (KPAR is not used)
+            if 'KPAR' in all_params:
+                del all_params['KPAR']
             
             # Force restart from WAVECAR and CHGCAR
             all_params['ISTART'] = 1
@@ -483,6 +581,16 @@ class VASPNPTProcessor:
                 'PMASS': f'{npt_params.pmass:.0f}',
                 'EDIFFG': npt_params.ediffg,
                 'ISYM': npt_params.isym
+            })
+
+            # Add parallelization parameters
+            all_params.update({
+                'NCORE': parallelization_params['ncore'],
+                'NPAR': parallelization_params['npar'],
+                # 'KPAR': parallelization_params['kpar'],  # KPAR not written
+                'NSIM': parallelization_params['nsim'],
+                'LPLANE': '.TRUE.',
+                'LSCALU': '.FALSE.'
             })
             
             # Ensure critical parameters are set correctly (override any existing values)
@@ -526,6 +634,14 @@ class VASPNPTProcessor:
                 f.write("Temperature Control:\n")
                 f.write(f"TEBEG = {temp}\n")
                 f.write(f"TEEND = {temp}\n")
+                f.write("\n")
+
+                # Parallelization flags
+                f.write("Parallelization flags:\n")
+                parallelization_keys = ['NCORE', 'NPAR', 'NSIM', 'LPLANE', 'LSCALU']  # KPAR removed
+                for key in parallelization_keys:
+                    if key in all_params:
+                        f.write(f"{key} = {all_params[key]}\n")
                 f.write("\n")
                 
                 # Space-saving flags
@@ -573,7 +689,10 @@ class VASPNPTProcessor:
         
         # Read existing INCAR parameters
         existing_params = self.read_incar(incar_path) if os.path.exists(incar_path) else DEFAULT_PARAMS.copy()
-        
+
+        # Calculate optimal parameters
+        parallelization_params = self.calculate_optimal_parallelization(atoms, kpoints)
+
         # Store system info
         system_info = SystemInfo(
             path=struct_path,
@@ -581,7 +700,11 @@ class VASPNPTProcessor:
             kpoints=kpoints,
             kpoint_grid=kpoint_grid,
             species_list=species_list,
-            lattice=lattice
+            lattice=lattice,
+            optimal_ncore=parallelization_params['ncore'],
+            optimal_npar=parallelization_params['npar'],
+            optimal_kpar=None,  # KPAR not calculated
+            optimal_nsim=parallelization_params['nsim']
         )
         
         results = {
@@ -619,7 +742,7 @@ class VASPNPTProcessor:
                 temp_incar_path = os.path.join(temp_dir, "INCAR")
                 self.write_or_update_incar(
                     temp_incar_path, existing_params, temp, 
-                    npt_params
+                    npt_params, parallelization_params
                 )
                 
                 # Write KPOINTS
@@ -701,6 +824,17 @@ class VASPNPTProcessor:
                 self.processed_dirs.append(struct_path)
             else:
                 self.skipped_dirs.append((struct_path, result.get('error', 'Unknown error')))
+
+def get_cluster_configs() -> Dict[str, ClusterConfig]:
+    """Get predefined cluster configurations."""
+    return {
+        "default": ClusterConfig("Default", 16, 8, 1, 8),
+        "small": ClusterConfig("Small", 8, 8, 1, 4),
+        "medium": ClusterConfig("Medium", 32, 8, 4, 8),
+        "large": ClusterConfig("Large", 64, 8, 8, 8),
+        "hpc": ClusterConfig("HPC", 128, 16, 8, 16),
+        "custom": ClusterConfig("Custom", 16, 8, 1, 8)  # Will be updated based on user input
+    }
     
 def main():
     """Main entry point."""
@@ -710,9 +844,9 @@ def main():
         epilog="""
 Examples:
   python3 prepare_directories_for_npt.py /path/to/structures
-  python3 prepare_directories_for_npt.py . --temps 300,500,700
+  python3 prepare_directories_for_npt.py . --temps 300,500,700 --cluster medium
   python3 prepare_directories_for_npt.py /data/vasp --dry-run
-  python3 prepare_directories_for_npt.py /structures --verbose
+  python3 prepare_directories_for_npt.py /structures --cores 32 --verbose
         """
     )
     
@@ -723,6 +857,12 @@ Examples:
                        help="Comma-separated filenames to delete inside each temp folder.")
     parser.add_argument("--keep-top-level-files", action="store_true",
                        help="If set, do NOT remove top-level files in each structure folder after populating.")
+    parser.add_argument("--cluster", choices=["default", "small", "medium", "large", "hpc", "custom"],
+                       default="default", help="Predefined cluster configuration")
+    parser.add_argument("--cores", type=int, help="Total number of cores (overrides cluster config)")
+    parser.add_argument("--cores-per-node", type=int, help="Cores per node (overrides cluster config)")
+    parser.add_argument("--nodes", type=int, help="Number of nodes (overrides cluster config)")
+    parser.add_argument("--max-ncore", type=int, help="Maximum NCORE value")
     parser.add_argument("--nsw", type=int, default=10000, help="Number of MD steps (default: 10000)")
     parser.add_argument("--dry-run", action="store_true", help="Analyze only, don't update files")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
@@ -743,9 +883,24 @@ Examples:
                         help="Do not enforce gamma decreasing with mass.")
     
     args = parser.parse_args()
+
+    # Get cluster configuration
+    configs = get_cluster_configs()
+    cluster_config = configs[args.cluster]
+
+    # Override with custom values if provided
+    if args.cores:
+        cluster_config.total_cores = args.cores
+    if args.cores_per_node:
+        cluster_config.cores_per_node = args.cores_per_node
+    if args.nodes:
+        cluster_config.nodes = args.nodes
+    if args.max_ncore:
+        cluster_config.max_ncore = args.max_ncore
     
     # Create processor
     processor = VASPNPTProcessor(
+        cluster_config,
         verbose=args.verbose and not args.quiet,
         nsw=args.nsw,
         gamma_ref=args.gamma_ref,
