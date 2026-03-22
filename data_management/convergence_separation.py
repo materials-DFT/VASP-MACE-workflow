@@ -4,8 +4,20 @@ from pathlib import Path
 import shutil
 
 
+# Default NELM when not set in INCAR (VASP default)
+DEFAULT_NELM = 60
+
+# Substrings that indicate electronic/ionic convergence failure in OUTCAR.
+# Do not use "aborting" alone: VASP writes "aborting loop because EDIFF is reached" on success.
+OUTCAR_FAILURE_PATTERNS = (
+    "reached maximum number",
+    "NOT CONVERGED",
+    "EDDDAV",
+)
+
+
 def read_nelm_from_incar(incar_path: Path) -> int | None:
-    """Parse NELM value from INCAR if present; return int or None."""
+    """Parse NELM value from INCAR if present; return int or None (then use DEFAULT_NELM)."""
     if not incar_path.is_file():
         return None
 
@@ -28,10 +40,14 @@ def read_nelm_from_incar(incar_path: Path) -> int | None:
     return nelm
 
 
+# Algorithm tags that start electronic iteration lines in OSZICAR (VASP)
+OSZICAR_ALGORITHM_TAGS = {"DAV", "CGA", "SDA", "RMM", "CG", "trl"}
+
+
 def max_iter_in_oszicar(oszicar_path: Path) -> int | None:
     """
     Return the maximum electronic iteration number seen in OSZICAR
-    (the 'N' column for DAV/CGA/SDA/.. lines). If none found, return None.
+    (the 'N' column for DAV/CGA/SDA/RMM/.. lines). If none found, return None.
     """
     if not oszicar_path.is_file():
         return None
@@ -42,9 +58,9 @@ def max_iter_in_oszicar(oszicar_path: Path) -> int | None:
             # Typical lines start with 'DAV:', 'CGA:', 'SDA:', 'RMM:' etc.
             if ":" not in line:
                 continue
-            head, *rest = line.split(":")
+            head, *rest = line.split(":", 1)
             head = head.strip()
-            if head not in {"DAV", "CGA", "SDA", "RMM"}:
+            if head not in OSZICAR_ALGORITHM_TAGS:
                 continue
             try:
                 # After the colon, first integer is iteration index
@@ -59,22 +75,60 @@ def max_iter_in_oszicar(oszicar_path: Path) -> int | None:
     return max_iter
 
 
-def is_unconverged(incar_path: Path, oszicar_path: Path) -> bool | None:
+def oszicar_has_final_energy(oszicar_path: Path) -> bool:
     """
-    Determine whether NELM was hit.
+    Return True if OSZICAR contains a completed ionic step summary line
+    (contains " F= " or " E0="). Such a line is written when the electronic
+    step has finished for that ionic step; absence indicates the run did not
+    complete (e.g. hit NELM or was killed).
+    """
+    if not oszicar_path.is_file():
+        return False
+    with oszicar_path.open("r", errors="ignore") as f:
+        for line in f:
+            if " F= " in line or " E0=" in line:
+                return True
+    return False
+
+
+def outcar_has_failure(outcar_path: Path) -> bool:
+    """Return True if OUTCAR contains known convergence/failure messages."""
+    if not outcar_path.is_file():
+        return False
+    try:
+        text = outcar_path.read_text(errors="ignore")
+        return any(p in text for p in OUTCAR_FAILURE_PATTERNS)
+    except OSError:
+        return False
+
+
+def is_unconverged(
+    incar_path: Path, oszicar_path: Path, outcar_path: Path | None = None
+) -> bool | None:
+    """
+    Determine whether the run converged.
 
     Returns:
-    - True  -> unconverged (max iter == NELM)
-    - False -> converged  (max iter < NELM)
-    - None  -> cannot decide (missing data)
+    - True  -> unconverged (hit NELM, no F=/E0= summary, or OUTCAR failure)
+    - False -> converged  (max iter < NELM, has F=/E0=, no OUTCAR failure)
+    - None  -> cannot decide (missing OSZICAR/INCAR or no iteration data)
     """
     nelm = read_nelm_from_incar(incar_path)
+    if nelm is None:
+        nelm = DEFAULT_NELM
     max_iter = max_iter_in_oszicar(oszicar_path)
-
-    if nelm is None or max_iter is None:
+    if max_iter is None:
         return None
 
-    # If the maximum electronic iteration equals NELM, we assume NELM was hit
+    # OUTCAR reports convergence failure
+    if outcar_path and outcar_has_failure(outcar_path):
+        return True
+
+    # No final energy line: run did not complete an ionic step (e.g. hit NELM or killed)
+    if not oszicar_has_final_energy(oszicar_path):
+        return True
+
+    # Hit or exceeded NELM => electronic convergence not reached
     if max_iter >= nelm:
         return True
     return False
@@ -87,11 +141,12 @@ def classify_simulation(sim_dir: Path) -> str | None:
     """
     incar = sim_dir / "INCAR"
     oszicar = sim_dir / "OSZICAR"
+    outcar = sim_dir / "OUTCAR"
 
     if not incar.exists() or not oszicar.exists():
         return None
 
-    flag = is_unconverged(incar, oszicar)
+    flag = is_unconverged(incar, oszicar, outcar if outcar.exists() else None)
     if flag is None:
         return None
     return "unconverged" if flag else "converged"
@@ -134,7 +189,6 @@ def main() -> None:
 
     converged = 0
     unconverged = 0
-    skipped = 0
 
     for entry in sorted(root.iterdir()):
         if entry.name in {"converged", "unconverged"}:
@@ -144,7 +198,9 @@ def main() -> None:
 
         status = classify_simulation(entry)
         if status is None:
-            skipped += 1
+            # Cannot decide (no INCAR/OSZICAR or no iteration data) -> treat as unconverged
+            move_simulation(entry, root, "unconverged")
+            unconverged += 1
             continue
         if status == "converged":
             move_simulation(entry, root, "converged")
@@ -155,7 +211,6 @@ def main() -> None:
 
     print(f"Converged runs moved:   {converged}")
     print(f"Unconverged runs moved: {unconverged}")
-    print(f"Skipped (undetermined/no INCAR/OSZICAR): {skipped}")
 
 
 if __name__ == "__main__":
