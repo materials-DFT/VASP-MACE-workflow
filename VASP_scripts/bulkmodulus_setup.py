@@ -171,21 +171,28 @@ def setup_calculation(template_dir, vol_pct_min, vol_pct_max, npts, cleanup=True
     """Set up bulk modulus calculations in a template directory.
     
     Args:
-        template_dir: Directory containing POSCAR and other input files
+        template_dir: Directory containing CONTCAR or POSCAR and other input files
         vol_pct_min: Minimum volume strain percentage (e.g., -10.0 for -10%)
         vol_pct_max: Maximum volume strain percentage (e.g., 10.0 for +10%)
         npts: Number of strain points to generate (includes 0% if range spans it)
         cleanup: If True (default), remove template files after creating V_* directories
     """
+    contcar_t = os.path.join(template_dir, "CONTCAR")
     poscar_t = os.path.join(template_dir, "POSCAR")
     
-    if not os.path.isfile(poscar_t):
-        print(f"Warning: No POSCAR found in {template_dir}, skipping...")
+    if os.path.isfile(contcar_t) and os.path.getsize(contcar_t) > 0:
+        structure_file = contcar_t
+        print(f"\n  Using CONTCAR (optimized structure) from: {template_dir}")
+    elif os.path.isfile(poscar_t):
+        structure_file = poscar_t
+        print(f"\n  Using POSCAR (no CONTCAR found) from: {template_dir}")
+    else:
+        print(f"Warning: No CONTCAR or POSCAR found in {template_dir}, skipping...")
         return False
     
-    print(f"\nSetting up calculations in: {template_dir}")
+    print(f"Setting up calculations in: {template_dir}")
     
-    header, A0, frac, nat, species_line, lines, counts_idx, sel_dyn, converted = read_poscar(poscar_t)
+    header, A0, frac, nat, species_line, lines, counts_idx, sel_dyn, converted = read_poscar(structure_file)
     if converted:
         print(f"  Note: Converted Cartesian coordinates to Direct (fractional) coordinates")
     counts_line = lines[counts_idx]
@@ -243,19 +250,21 @@ def setup_calculation(template_dir, vol_pct_min, vol_pct_max, npts, cleanup=True
     print(f"  Made {npts} EOS points from {vol_pct_min}% to {vol_pct_max}%.")
     return True
 
-def find_poscar_directories(root_dir):
-    """Recursively find all directories containing POSCAR files."""
-    poscar_dirs = []
+def find_structure_directories(root_dir):
+    """Recursively find all directories containing CONTCAR or POSCAR files."""
+    struct_dirs = []
     root_path = Path(root_dir).resolve()
     
-    for poscar_file in root_path.rglob("POSCAR"):
-        poscar_dir = poscar_file.parent
-        # Skip if already in a V_* subdirectory (these are our output directories)
-        if "V_" in poscar_dir.name:
-            continue
-        poscar_dirs.append(str(poscar_dir))
+    for name in ("CONTCAR", "POSCAR"):
+        for struct_file in root_path.rglob(name):
+            parent = struct_file.parent
+            if "V_" in parent.name:
+                continue
+            if name == "CONTCAR" and os.path.getsize(struct_file) == 0:
+                continue
+            struct_dirs.append(str(parent))
     
-    return sorted(set(poscar_dirs))  # Remove duplicates and sort
+    return sorted(set(struct_dirs))
 
 def main():
     parser = argparse.ArgumentParser(
@@ -337,25 +346,25 @@ Examples:
             sys.exit(1)
     else:
         # Recursive mode
-        print(f"Searching for POSCAR files in: {root_dir}")
-        poscar_dirs = find_poscar_directories(root_dir)
+        print(f"Searching for CONTCAR/POSCAR files in: {root_dir}")
+        struct_dirs = find_structure_directories(root_dir)
         
-        if not poscar_dirs:
-            print(f"No POSCAR files found in {root_dir}")
+        if not struct_dirs:
+            print(f"No CONTCAR or POSCAR files found in {root_dir}")
             sys.exit(1)
         
-        print(f"Found {len(poscar_dirs)} directory(ies) with POSCAR files:")
-        for d in poscar_dirs:
+        print(f"Found {len(struct_dirs)} directory(ies) with structure files:")
+        for d in struct_dirs:
             print(f"  - {d}")
         
         print("\nSetting up calculations...")
         success_count = 0
-        for template_dir in poscar_dirs:
+        for template_dir in struct_dirs:
             if setup_calculation(template_dir, args.min, args.max, args.npts, cleanup_enabled):
                 success_count += 1
         
         print(f"\n{'='*60}")
-        print(f"Completed: {success_count}/{len(poscar_dirs)} directories processed successfully.")
+        print(f"Completed: {success_count}/{len(struct_dirs)} directories processed successfully.")
 
 if __name__ == "__main__":
     main()
