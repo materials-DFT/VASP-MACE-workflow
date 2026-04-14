@@ -78,6 +78,12 @@ def _categorize_run_id(run_id):
                 return ('Amorphous KMnO2', 'defective')
             return ('Amorphous KMnO2', os.path.basename(path))
 
+        if 'defective_structures' in path:
+            return ('Defective structures', os.path.basename(path.rstrip('/')))
+
+        if 'amorphous_structures' in path:
+            return ('Amorphous structures', os.path.basename(path.rstrip('/')))
+
         if 'bulk_modulus' in path:
             parts = path.rstrip('/').split('/')
             for i, p in enumerate(parts):
@@ -104,6 +110,48 @@ def _categorize_run_id(run_id):
                 kind = 'supercells' if 'supercells' in path else 'unitcells'
                 return (f'Optimized: mno2 {kind}', name)
             return ('Optimized', os.path.basename(path))
+
+        # --- Path-style MD (directory layout under .../md/...) ----------------
+        if 'mno2_phases+k' in path:
+            if '/supercells/' in path:
+                sc = re.search(
+                    r'monkhorst-pack_calculated/(\w+)/(\d+K)$', path.rstrip('/'))
+                if sc:
+                    return ('MD: mno2 supercells', sc.group(1))
+                return ('MD: mno2 supercells', os.path.basename(path.rstrip('/')))
+            if '/unitcells/' in path:
+                uc = re.search(r'/isif3/(\w+)/(\d+K)$', path.rstrip('/'))
+                if uc:
+                    return ('MD: mno2 unitcells', uc.group(1))
+                return ('MD: mno2 unitcells', os.path.basename(path.rstrip('/')))
+            return ('MD: mno2 phases+k', os.path.basename(path.rstrip('/')))
+
+        if '/md/kmno2/' in path:
+            mp = re.search(r'/(mp\d+)/(\d+K)$', path.rstrip('/'))
+            if mp:
+                return ('MD: kmno2', mp.group(1))
+            mp2 = re.search(r'/(mp\d+)/', path)
+            if mp2:
+                return ('MD: kmno2', mp2.group(1))
+            return ('MD: kmno2', os.path.basename(path.rstrip('/')))
+
+        if '/md/kmno/' in path:
+            comp = re.search(
+                r'/monkhorst-pack_calculated/([A-Z][A-Za-z0-9]+)/(\d+K)$',
+                path.rstrip('/'),
+            )
+            if comp:
+                return ('MD: kmno', comp.group(1))
+            return ('MD: kmno', os.path.basename(path.rstrip('/')))
+
+        if '/md/todorokite/' in path:
+            layers = re.search(r'/todorokite/(\w+)/(\d+K)$', path.rstrip('/'))
+            if layers:
+                return ('MD: todorokite', layers.group(1))
+            return ('MD: todorokite', os.path.basename(path.rstrip('/')))
+
+        if '/md/' in path:
+            return ('MD: other', os.path.basename(path.rstrip('/')))
 
     return (None, None)
 

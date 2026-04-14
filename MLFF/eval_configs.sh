@@ -2,9 +2,9 @@
 #SBATCH --job-name=MLFF_Eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=eval_output.log
-#SBATCH --partition=gpuquick
+#SBATCH --partition=gpucluster
 #SBATCH --gres=gpu:1
 
 # Unified evaluation script for MACE and Allegro (NequIP) models.
@@ -56,12 +56,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ===== Autodetect CONFIGS_FILE: single .xyz in submit directory =====
+# Ignore output.xyz — it is written by this script; a leftover file must not count as a second input.
 if [[ -z "${CONFIGS_FILE}" ]]; then
   shopt -s nullglob
-  XYZ_FILES=( ./*.xyz )
+  ALL_XYZ=( ./*.xyz )
   shopt -u nullglob
+  XYZ_FILES=()
+  for f in "${ALL_XYZ[@]}"; do
+    [[ "$(basename "$f")" == "output.xyz" ]] && continue
+    XYZ_FILES+=( "$f" )
+  done
   if [[ ${#XYZ_FILES[@]} -eq 0 ]]; then
     echo "❌ Error: No .xyz file in current directory. Put exactly one .xyz (configs) here."
+    echo "   (output.xyz is ignored when picking the input file; use --configs FILE if your input is only output.xyz.)"
     exit 1
   elif [[ ${#XYZ_FILES[@]} -gt 1 ]]; then
     echo "❌ Error: Multiple .xyz files found. Keep only one or use --configs FILE:"
@@ -170,6 +177,12 @@ else
 fi
 
 # ===== Run evaluation by backend =====
+# Remove stale output.xyz so evaluation can overwrite (unless the configs file *is* output.xyz).
+if [[ "$(basename "$CONFIGS_FILE")" != "output.xyz" ]] && [[ -f output.xyz ]]; then
+  echo "ℹ Removing existing output.xyz so the run can write a fresh file."
+  rm -f output.xyz
+fi
+
 if [[ "$BACKEND" == "mace" ]]; then
   COMPUTE_STRESS_ARGS=()
   [[ "$COMPUTE_STRESS" -eq 1 ]] && COMPUTE_STRESS_ARGS=(--compute_stress)
