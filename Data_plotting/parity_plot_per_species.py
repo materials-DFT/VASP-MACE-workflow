@@ -10,7 +10,7 @@ import sys
 parser = argparse.ArgumentParser(
     description=(
         "Plot per-species force parity (MLIP vs REF) from an XYZ file. "
-        "Auto-detects MACE vs ALLEGRO from frame.info. "
+        "Auto-detects MACE, ALLEGRO, or UMA from frame.info. "
         "Shows combined force parity per species and directional (Fx, Fy, Fz) breakdown."
     )
 )
@@ -28,7 +28,7 @@ if len(frames) == 0:
     print(f"No frames found in file {args.xyz_file}")
     sys.exit(1)
 
-# --- Detect MLIP type (MACE or ALLEGRO) ---
+# --- Detect MLIP type (MACE, ALLEGRO, or UMA) ---
 first_info = frames[0].info
 if "MACE_energy" in first_info:
     ml_forces_key = "MACE_forces"
@@ -36,9 +36,12 @@ if "MACE_energy" in first_info:
 elif "ALLEGRO_energy" in first_info:
     ml_forces_key = "ALLEGRO_forces"
     ml_label = "ALLEGRO"
+elif "UMA_energy" in first_info:
+    ml_forces_key = "UMA_forces"
+    ml_label = "UMA"
 else:
     print(
-        "No 'MACE_energy' or 'ALLEGRO_energy' in frame.info. "
+        "No 'MACE_energy', 'ALLEGRO_energy', or 'UMA_energy' in frame.info. "
         "Make sure the XYZ file was written with one of these fields."
     )
     sys.exit(1)

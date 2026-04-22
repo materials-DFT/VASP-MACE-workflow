@@ -7,8 +7,8 @@ import sys
 # --- Argument parser ---
 parser = argparse.ArgumentParser(
     description=(
-        "Plot MLIP (MACE or ALLEGRO) vs REF parity plots from an XYZ file. "
-        "Auto-detects MACE vs ALLEGRO from frame.info. "
+        "Plot MLIP (MACE, ALLEGRO, or UMA) vs REF parity plots from an XYZ file. "
+        "Auto-detects MACE, ALLEGRO, or UMA from frame.info. "
         "Energy plots use relative energies (reference structure = 0)."
     )
 )
@@ -35,7 +35,7 @@ if len(frames) == 0:
     print(f"No frames found in file {args.xyz_file}")
     sys.exit(1)
 
-# --- Detect MLIP type (MACE or ALLEGRO) ---
+# --- Detect MLIP type (MACE, ALLEGRO, or UMA) ---
 first_info = frames[0].info
 if "MACE_energy" in first_info:
     ml_energy_key = "MACE_energy"
@@ -47,9 +47,14 @@ elif "ALLEGRO_energy" in first_info:
     ml_forces_key = "ALLEGRO_forces"
     ml_stress_key = "ALLEGRO_stress"
     ml_label = "ALLEGRO"
+elif "UMA_energy" in first_info:
+    ml_energy_key = "UMA_energy"
+    ml_forces_key = "UMA_forces"
+    ml_stress_key = "UMA_stress"
+    ml_label = "UMA"
 else:
     print(
-        "No 'MACE_energy' or 'ALLEGRO_energy' in frame.info. "
+        "No 'MACE_energy', 'ALLEGRO_energy', or 'UMA_energy' in frame.info. "
         "Make sure the XYZ file was written with one of these fields."
     )
     sys.exit(1)

@@ -178,6 +178,7 @@ Examples:
         core.make_rdf_msd_figure(
             all_res,
             labels,
+            sim_dirs=sim_dirs,
             rdf_pairs=args.rdf_pairs,
             msd_tmax=args.msd_tmax,
             save=args.save,
