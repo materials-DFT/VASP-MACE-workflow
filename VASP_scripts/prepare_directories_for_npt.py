@@ -352,6 +352,12 @@ class VASPNPTProcessor:
                         parts = line.split('=', 1)
                         key = parts[0].strip()
                         value_str = parts[1].strip()
+                        # Strip inline comments commonly used in INCAR:
+                        # EDIFFG = -5E-02  force criterion ! note
+                        # EDIFFG = -5E-02  # note
+                        for marker in ('#', '!'):
+                            if marker in value_str:
+                                value_str = value_str.split(marker, 1)[0].strip()
 
                         # Skip KPAR - remove it if found
                         if key.upper() == 'KPAR':
@@ -366,8 +372,20 @@ class VASPNPTProcessor:
                                 # Try float
                                 params[key] = float(value_str)
                         except ValueError:
-                            # Keep as string
-                            params[key] = value_str
+                            # Some INCAR lines contain trailing prose after numeric values,
+                            # e.g. "EDIFFG = -5E-02 force stopping-criterion".
+                            # Fall back to parsing the first token when possible.
+                            first_token = value_str.split()[0] if value_str.split() else value_str
+                            try:
+                                if re.fullmatch(r'[+-]?\d+', first_token):
+                                    params[key] = int(first_token)
+                                elif re.fullmatch(r'[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?', first_token):
+                                    params[key] = float(first_token)
+                                else:
+                                    params[key] = value_str
+                            except ValueError:
+                                # Keep as string
+                                params[key] = value_str
                             
         except Exception as e:
             self.log(f"Error reading INCAR {incar_path}: {e}", "ERROR")
@@ -658,6 +676,8 @@ class VASPNPTProcessor:
                             dry_run: bool = False) -> Dict[str, Any]:
         """Process a single structure directory with all optimizations."""
         struct_path = os.path.abspath(struct_path)
+        temp_dir_match = re.fullmatch(r"(\d+)K", os.path.basename(struct_path))
+        in_place_temp = int(temp_dir_match.group(1)) if temp_dir_match else None
         
         # Collect top-level files
         try:
@@ -716,21 +736,28 @@ class VASPNPTProcessor:
             'system_info': system_info
         }
         
-        # Process each temperature
-        for temp in temperatures:
+        # Process each temperature.
+        # If the input directory is already a temperature directory (e.g. 300K),
+        # update that directory in place and do not create nested temperature folders.
+        target_temperatures = [in_place_temp] if in_place_temp is not None else temperatures
+        for temp in target_temperatures:
             temp_dir = os.path.join(struct_path, f"{temp}K")
+            if in_place_temp is not None:
+                temp_dir = struct_path
             
             if not dry_run:
-                os.makedirs(temp_dir, exist_ok=True)
+                if in_place_temp is None:
+                    os.makedirs(temp_dir, exist_ok=True)
                 
                 # Copy top-level files into temp dir
-                for file in top_files:
-                    src = os.path.join(struct_path, file)
-                    dst = os.path.join(temp_dir, file)
-                    try:
-                        shutil.copy2(src, dst)
-                    except Exception as e:
-                        self.log(f"Couldn't copy {src} -> {dst}: {e}", "WARNING")
+                if in_place_temp is None:
+                    for file in top_files:
+                        src = os.path.join(struct_path, file)
+                        dst = os.path.join(temp_dir, file)
+                        try:
+                            shutil.copy2(src, dst)
+                        except Exception as e:
+                            self.log(f"Couldn't copy {src} -> {dst}: {e}", "WARNING")
                 
                 # Calculate NPT parameters for this temperature
                 npt_params = self.calculate_optimal_npt_parameters(
@@ -773,8 +800,8 @@ class VASPNPTProcessor:
             results['temperatures_processed'] += 1
             self.log(f"Processed {temp}K directory: {temp_dir}")
         
-        # Remove top-level files if requested
-        if not dry_run and not keep_top_level_files:
+        # Remove top-level files if requested (not applicable in-place temp mode)
+        if not dry_run and in_place_temp is None and not keep_top_level_files:
             for file in top_files:
                 try:
                     os.remove(os.path.join(struct_path, file))
@@ -806,16 +833,22 @@ class VASPNPTProcessor:
                 self.skipped_dirs.append((path, result.get('error', 'Unknown error')))
             return
         
-        # Otherwise, treat immediate subdirectories as structures
-        subdirs = [os.path.join(path, d) for d in os.listdir(path)
-                  if os.path.isdir(os.path.join(path, d))]
-        
-        if not subdirs:
-            self.log(f"No structure subfolders found under '{path}'.", "WARNING")
+        # Otherwise, recursively discover structure directories.
+        # A structure directory is any directory containing VASP hint files.
+        structure_dirs = []
+        for root, _dirs, _files in os.walk(path):
+            if self.is_structure_dir(root):
+                structure_dirs.append(root)
+
+        # Process shallow paths first for stable and predictable behavior.
+        structure_dirs = sorted(set(structure_dirs), key=lambda p: (p.count(os.sep), p))
+
+        if not structure_dirs:
+            self.log(f"No structure folders found under '{path}' (recursive).", "WARNING")
             return
         
-        self.log(f"Processing parent: {path} (structures: {len(subdirs)})")
-        for struct_path in subdirs:
+        self.log(f"Processing parent recursively: {path} (structures: {len(structure_dirs)})")
+        for struct_path in structure_dirs:
             result = self.process_structure_dir(
                 struct_path, temperatures, files_to_delete,
                 keep_top_level_files, dry_run
