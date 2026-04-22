@@ -16,8 +16,8 @@ fi
 cd "$TARGET_DIR" || exit
 
 # Recursively find and submit all submit.vasp6.sh scripts
-find . -type f -name submit.vasp6.sh | while read -r script; do
+find . -type f -name *submit* | while read -r script; do
     echo "Submitting $script"
     script_dir=$(dirname "$script")
-    (cd "$script_dir" && sbatch submit.vasp6.sh)
+    (cd "$script_dir" && sbatch *submit*)
 done

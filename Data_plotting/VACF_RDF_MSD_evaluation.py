@@ -95,6 +95,24 @@ ATOMIC_MASS = {
 }
 
 
+_FLOAT_RE = re.compile(
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+)
+
+
+def _parse_first_three_floats(line, source):
+    """Parse the first 3 float values from a coordinate line.
+
+    Robust against null bytes and trailing non-numeric garbage sometimes seen in
+    partially corrupted text files on shared/network filesystems.
+    """
+    clean = line.replace("\x00", " ")
+    vals = _FLOAT_RE.findall(clean)
+    if len(vals) < 3:
+        raise ValueError(f"Could not parse 3 floats from {source}: {line!r}")
+    return np.array(vals[:3], dtype=float)
+
+
 def kinetic_temperature_from_mean_v_squared(v2, mass_amu, vel_to_m_s):
     """Kinetic temperature from mean square speed (equipartition).
 
@@ -144,6 +162,10 @@ def infer_velocity_si_scale(directory, traj_fmt, dt_source):
                         return 1.0
                     if u == "lj":
                         return None
+    # For LAMMPS trajectories where explicit velocities are present in extxyz,
+    # units are usually from the LAMMPS unit style (metal: Å/ps, real: Å/fs).
+    # If velocities are reconstructed from positions elsewhere, the units are
+    # always Å/fs and should use 1e5 m/s per unit instead.
     if dt_source == "LAMMPS":
         return 100.0
     return 1e5
@@ -314,6 +336,7 @@ def read_xdatcar(path, skip=0, max_frames=None):
     nat = None
     n_read = 0
     seen = 0
+    n_bad = 0
     with open(path) as fh:
         while True:
             comment = fh.readline()
@@ -358,15 +381,31 @@ def read_xdatcar(path, skip=0, max_frames=None):
                 direct = True
             else:
                 direct = not cfg_l.startswith("c")
+            seen += 1
             pos = np.empty((nat, 3))
+            bad_frame = False
             for a in range(nat):
                 ln = fh.readline()
                 if not ln:
                     raise ValueError(f"XDATCAR truncated in {path}")
-                pos[a] = np.array(ln.split()[:3], dtype=float)
+                try:
+                    pos[a] = _parse_first_three_floats(ln, f"XDATCAR {path}")
+                except ValueError as exc:
+                    bad_frame = True
+                    n_bad += 1
+                    print(
+                        f"    Warning: skipping corrupted XDATCAR frame {seen} in {path}: {exc}",
+                        flush=True,
+                    )
+                    # Consume remaining atom lines for this frame to keep parser aligned.
+                    for _ in range(a + 1, nat):
+                        if not fh.readline():
+                            raise ValueError(f"XDATCAR truncated in {path}")
+                    break
+            if bad_frame:
+                continue
             if direct:
                 pos = pos @ cell
-            seen += 1
             if seen <= skip:
                 continue
             positions.append(pos)
@@ -376,18 +415,24 @@ def read_xdatcar(path, skip=0, max_frames=None):
                 print(f"    {n_read} frames ...", flush=True)
             if max_frames is not None and n_read >= max_frames:
                 break
-    print(f"    {n_read} frames, {nat} atoms (XDATCAR, positions only)")
+    bad_tag = f", skipped {n_bad} corrupted frame(s)" if n_bad else ""
+    print(f"    {n_read} frames, {nat} atoms (XDATCAR, positions only{bad_tag})")
     return np.array(positions), np.array(cells), species, None
 
 
 def find_trajectory(directory):
     """Locate the best trajectory file in *directory*.
 
-    Priority: LAMMPS extxyz / xyz first, then **XDATCAR** (compact VASP MD),
-    then OUTCAR.  Preferring XDATCAR over OUTCAR avoids multi‑GB OUTCAR scans
-    when both exist.
+    Priority: **XDATCAR** (compact VASP MD), then OUTCAR, then
+    LAMMPS-style extxyz / xyz. Preferring VASP-native trajectories avoids
+    accidentally picking unrelated/aggregate xyz files in VASP directories.
     """
     d = Path(directory)
+    if (d / "XDATCAR").exists():
+        return str(d / "XDATCAR"), "xdatcar"
+    outcar = d / "OUTCAR"
+    if outcar.exists():
+        return str(outcar), "outcar"
     for pattern in [
         "trajectory*.extxyz", "*.extxyz",
         "all_frames*.xyz", "*.xyz",
@@ -395,11 +440,6 @@ def find_trajectory(directory):
         hits = sorted(d.glob(pattern))
         if hits:
             return str(hits[-1]), "xyz"
-    if (d / "XDATCAR").exists():
-        return str(d / "XDATCAR"), "xdatcar"
-    outcar = d / "OUTCAR"
-    if outcar.exists():
-        return str(outcar), "outcar"
     return None, None
 
 
@@ -1378,30 +1418,47 @@ def make_psd_figure(
 def make_rdf_msd_figure(
     results_list,
     labels,
+    sim_dirs=None,
     rdf_pairs=None,
     msd_tmax=None,
     save=None,
     maximize_window=True,
 ):
-    """One window: RDF and MSD only."""
+    """One window: RDF and MSD only (stacked by temperature when available)."""
     _configure_matplotlib_backend(save=save)
     import matplotlib.pyplot as plt
 
     colors = plt.cm.tab10.colors
     ls_cycle = ["-", "--", "-.", ":"]
-    fig = plt.figure(figsize=(13.5, 5.8))
+
+    if sim_dirs is None or len(sim_dirs) != len(results_list):
+        sim_dirs = [f"series_{i + 1}" for i in range(len(results_list))]
+
+    temp_groups = group_results_by_temperature(sim_dirs, results_list, labels)
+    n_blocks = max(len(temp_groups), 1)
+    fig_h = max(5.8, 2.8 * n_blocks + 0.8)
+    fig = plt.figure(figsize=(13.5, fig_h))
     fig.suptitle("Structure & diffusion — MD comparison", fontsize=13, weight="bold", y=0.995)
-    ax_rdf, ax_msd = fig.subplots(1, 2)
-    _plot_rdf_msd_axes(
-        ax_rdf,
-        ax_msd,
-        results_list,
-        labels,
-        rdf_pairs,
-        msd_tmax,
-        colors,
-        ls_cycle,
-    )
+
+    subfigs = fig.subfigures(n_blocks, 1, hspace=_SUBFIG_HSPACE_TEMP_BLOCKS)
+    subfigs = np.atleast_1d(subfigs).ravel()
+
+    for (group_title, series_pairs), sf in zip(temp_groups, subfigs):
+        sf.suptitle(group_title, fontsize=10, weight="bold", y=1.01)
+        ax_rdf, ax_msd = sf.subplots(1, 2)
+        grp_results = [R for R, _lab in series_pairs]
+        grp_labels = [_lab for _R, _lab in series_pairs]
+        _plot_rdf_msd_axes(
+            ax_rdf,
+            ax_msd,
+            grp_results,
+            grp_labels,
+            rdf_pairs,
+            msd_tmax,
+            colors,
+            ls_cycle,
+        )
+
     _finalize_md_figure(fig, save, maximize_window, tight_layout_rect=_TIGHT_LAYOUT_RDF_MSD)
 
 
@@ -1538,9 +1595,48 @@ def analyze_one(directory, skip, max_frames,
         "xdatcar": read_xdatcar,
     }
     reader = readers.get(traj_fmt, read_xyz)
-    pos, cells, species, vel = reader(traj_path, skip=skip,
-                                      max_frames=max_frames)
+    try:
+        pos, cells, species, vel = reader(traj_path, skip=skip,
+                                          max_frames=max_frames)
+    except Exception as exc:
+        dpath = Path(directory)
+        fallback_path, fallback_fmt = None, None
+        # Robust fallback path selection:
+        # - xyz failure   -> try XDATCAR, then OUTCAR
+        # - xdatcar fail  -> try OUTCAR
+        if traj_fmt == "xyz":
+            if (dpath / "XDATCAR").exists():
+                fallback_path, fallback_fmt = str(dpath / "XDATCAR"), "xdatcar"
+            elif (dpath / "OUTCAR").exists():
+                fallback_path, fallback_fmt = str(dpath / "OUTCAR"), "outcar"
+        elif traj_fmt == "xdatcar":
+            if (dpath / "OUTCAR").exists():
+                fallback_path, fallback_fmt = str(dpath / "OUTCAR"), "outcar"
+
+        if fallback_path is not None:
+            print(
+                f"  {traj_fmt.upper()} read failed ({type(exc).__name__}: {exc}); "
+                f"retrying with {Path(fallback_path).name} ({fallback_fmt})"
+            )
+            traj_path, traj_fmt = fallback_path, fallback_fmt
+            reader = readers[fallback_fmt]
+            pos, cells, species, vel = reader(traj_path, skip=skip,
+                                              max_frames=max_frames)
+        else:
+            raise
     nf = len(pos)
+    if nf == 0 and skip > 0:
+        print(
+            f"  No frames left after skip={skip}; retrying this run with skip=0",
+            flush=True,
+        )
+        pos, cells, species, vel = reader(traj_path, skip=0, max_frames=max_frames)
+        nf = len(pos)
+    if nf == 0:
+        raise ValueError(
+            f"No readable frames found in trajectory {traj_path} "
+            f"(after trying skip={skip} and skip=0)."
+        )
     u, c = np.unique(species, return_counts=True)
     print(f"  Species: {', '.join(f'{s}({n})' for s, n in zip(u, c))}")
 
@@ -1557,6 +1653,11 @@ def analyze_one(directory, skip, max_frames,
     md_engine = _infer_md_engine(d, traj_fmt, src)
     print(f"  MD engine: {md_engine}")
     vel_to_m_s = infer_velocity_si_scale(d, traj_fmt, src)
+    # If trajectory has no explicit velocities, VACF is built from finite
+    # differences of Cartesian positions / dt_fs, i.e. Å/fs regardless of
+    # original engine. Use Å/fs -> m/s conversion in that case.
+    if vel is None:
+        vel_to_m_s = 1e5
 
     if compute_psd:
         print(f"  Power spectrum (from VACF) ...")
@@ -1677,7 +1778,27 @@ def _has_simulation(d):
 def _temp_sort_key(p):
     """Sort key that extracts leading number from dir name (e.g. '300K' → 300)."""
     m = re.match(r"(\d+)", p.name)
-    return int(m.group(1)) if m else p.name
+    if m:
+        return (0, int(m.group(1)), p.name)
+    return (1, 0, p.name)
+
+
+def _collect_simulation_leaves(root):
+    """Recursively collect deepest simulation directories under *root*.
+
+    If a directory has simulation-bearing children, those children are preferred
+    over the parent, even when the parent also contains aggregate trajectory files.
+    """
+    root = Path(root)
+    child_dirs = sorted([c for c in root.iterdir() if c.is_dir()], key=_temp_sort_key)
+    leaf_hits = []
+    for c in child_dirs:
+        leaf_hits.extend(_collect_simulation_leaves(c))
+    if leaf_hits:
+        return leaf_hits
+    if _has_simulation(root):
+        return [root]
+    return []
 
 
 def resolve_dirs(raw_dirs):
@@ -1698,16 +1819,11 @@ def resolve_dirs(raw_dirs):
     origin_index = []
     for root_i, d in enumerate(raw_dirs):
         d = Path(d)
-        children = sorted(
-            [c for c in d.iterdir() if c.is_dir() and _has_simulation(c)],
-            key=_temp_sort_key)
-        if children:
-            for c in children:
+        leaves = _collect_simulation_leaves(d)
+        if leaves:
+            for c in leaves:
                 resolved.append(c)
                 origin_index.append(root_i)
-        elif _has_simulation(d):
-            resolved.append(d)
-            origin_index.append(root_i)
         else:
             resolved.append(d)
             origin_index.append(root_i)  # let analyze_one raise a clear error
