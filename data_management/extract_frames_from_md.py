@@ -9,8 +9,6 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --time=02:00:00
-##SBATCH --output=extract_md_%j.out
-##SBATCH --error=extract_md_%j.err
 """
 Extract 2 frames from each VASP MD OUTCAR and write to a single extended XYZ file.
 
