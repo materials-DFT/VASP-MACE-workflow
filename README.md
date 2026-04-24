@@ -1,192 +1,148 @@
-# 🔬 VASP-MACE-workflow
+# VASP-MACE-workflow
 
-A collection of Python scripts and shell utilities for automating VASP (Vienna Ab initio Simulation Package) calculations, preparing molecular dynamics simulations, managing MACE (Machine-learning Approach to Chemistry Emulation) workflows, and analyzing computational materials science data.
+Utilities for VASP/MLFF workflows on HPC systems: structure preparation, INCAR/KPOINTS automation, SLURM job management, trajectory conversion/extraction, MLFF evaluation, and plotting.
 
-## 📋 Overview
+## What Is In This Repo
 
-This repository provides tools to streamline common tasks in computational materials science workflows, particularly those involving:
-- **⚛️ VASP calculations**: Automated setup, parameter optimization, and job management
-- **🤖 MACE machine learning**: Model evaluation and validation
-- **🌡️ Molecular dynamics**: NPT simulation preparation with optimized parameters
-- **📊 Data analysis**: Extraction and visualization of simulation results
+- `VASP_scripts`: VASP input generation and recursive INCAR/KPOINTS tuning.
+- `data_management`: dataset extraction/conversion/filtering and structure curation.
+- `Data_plotting`: parity plots, MD diagnostics, EOS and dataset distribution visualization.
+- `MLFF`: MACE/Allegro/UMA training-evaluation helpers and model conversion utilities.
+- `cluster_management`: bulk submit/check/cancel helpers for SLURM (plus PBS variant).
+- `software`: cluster-specific build/run guides and scripts (Polaris, Palmetto).
+- `supplemental`: example Allegro training artifacts/config snapshots.
 
-## Repository Structure
+## Quick Start
 
-### 📁 VASP_scripts/
-Python utilities for VASP input file generation and manipulation:
-
-- **`kpoints_calculator.py`** 🔢 - Automatically calculates and recommends KPOINTS mesh parameters based on POSCAR lattice dimensions. Supports both Gamma and Monkhorst-Pack meshes with configurable density constants.
-- **`set_magmom_nelect.py`** 🧲 - Recursively updates INCAR files with magnetic moments (MAGMOM) and electron counts (NELECT) based on POSCAR atom counts and POTCAR ZVAL values.
-- **`smass_set_recursive.py`** 🔄 - Sets SMASS parameter recursively across directories.
-- **`standartize_poscar.py`** ✨ - Standardizes POSCAR file formatting.
-- **`bulkmodulus_setup.py`** 📐 - Sets up bulk modulus calculations by generating multiple strained structures. Creates directories with volume-strained POSCAR files (default: -10% to +10% strain, 13 points) for equation of state (EOS) fitting. Automatically modifies INCAR files for single-point energy calculations and handles cleanup of template files.
-
-### 📁 MACE_scripts/
-Scripts for Machine Learning Atomic Cluster Expansion workflows:
-
-- **`eval_configs.sh`** 🚀 - SLURM submission script for evaluating MACE models on configuration files. Automatically detects model files and handles GPU allocation.
-- **`mace_1gpu.sh`** 🎯 - SLURM submission script for training MACE models using a single GPU. Automatically finds `.xyz` training files in the submission directory and runs training with standard MACE parameters (64x0e + 64x1o + 64x2e hidden irreps, r_max=5.0, float64 precision).
-- **`mace_2gpus.sh`** 🔀 - SLURM submission script for distributed MACE training across 2 GPUs. Uses the same training parameters as `mace_1gpu.sh` but enables distributed training for faster model convergence on larger datasets.
-- **`mace_4gpus.sh`** ⚡ - SLURM submission script for distributed MACE training across 4 GPUs. Provides maximum training speed for large-scale MACE model training using the same configuration as the single-GPU script.
-
-### 📁 INCAR_NPT_preparation/
-Tools for preparing NPT (isothermal-isobaric) molecular dynamics simulations:
-
-- **`npt_incar_optimizer.py`** ⚙️ - Advanced parameter optimizer for VASP NPT MD simulations. Generates physically motivated Langevin thermostat parameters that:
-  - ⚖️ Scale with atomic masses (lighter atoms get stronger damping)
-  - 🌡️ Adjust with temperature
-  - ⏱️ Compute safe POTIM values based on system composition
-  - 📏 Optimize PMASS and LANGEVIN_GAMMA_L based on system size
-- **`prepare_directories_for_md.py`** 📂 - Sets up directory structures for MD runs at multiple temperatures, handling file organization and cleanup.
-
-### 📁 data_management/
-Data extraction, analysis, and visualization tools:
-
-- **`parity_plot_per_atom.py`** 📈 - Generates parity plots comparing MACE predictions vs reference (DFT) energies and forces. Creates visualizations for total energy, per-atom energy, and force components.
-- **`converged_global_extract_frames_500+.py`** 💾 - Extracts converged frames from VASP OUTCAR files and writes them to XYZ format. Memory-efficient processing for large trajectory files.
-- **`plot_md_temperature.sh`** 📉 - Shell script for plotting temperature evolution from MD simulations.
-
-### 📁 Data_plotting/
-Advanced plotting and analysis tools for simulation results:
-
-- **`plot_bulk_modulus.py`** 📊 - Analyzes bulk modulus calculations from VASP OUTCAR files. Extracts volume-energy data, fits to Birch-Murnaghan equation of state, and generates comprehensive plots with normalized energy vs volume curves. Automatically detects compounds from directory structure and generates summary tables with fitted parameters (B₀, V₀, B₀', E₀).
-- **`plot_md_pvt.py`** 🌡️ - Interactive plotter for VASP MD simulations showing temperature, volume, and pressure vs step. Supports both GUI (X11) and ASCII output modes. Automatically handles remote X11 connections with robust backend selection (TkAgg/Qt5Agg) and includes fallback ASCII plotting for environments without display.
-
-### 📁 SLURM_management/
-Utilities for managing computational jobs on SLURM clusters:
-
-- **`submit_all_jobs.sh`** 📤 - Recursively finds and submits all `submit.vasp6.sh` scripts in a directory tree.
-- **`check_jobs.sh`** 👀 - Monitors SLURM job status, showing job state, progress (steps completed vs total), and output paths.
-
-### 📁 software/
-Compilation guides and installation scripts for high-performance computing clusters:
-
-- **`Polaris_software/`** 🏔️ - Guides and scripts for Polaris cluster:
-  - 📘 VASP GPU compilation guide
-  - 📗 LAMMPS with Kokkos and MACE installation guide
-  - 🔧 Compilation scripts
-- **`Palmetto_software/`** 🌴 - Scripts for Palmetto cluster:
-  - 🔧 LAMMPS MACE build scripts
-
-## ✨ Key Features
-
-### 🤖 Automated Parameter Optimization
-- **🔢 KPOINTS**: Automatic mesh generation based on lattice parameters
-- **🌡️ NPT MD**: Mass- and temperature-aware Langevin thermostat parameters
-- **🧲 Magnetic properties**: Automatic MAGMOM and NELECT calculation
-
-### ⚡ Workflow Automation
-- 🔄 Batch processing across directory structures
-- 📁 Recursive operations for large datasets
-- 🖥️ Integration with SLURM job schedulers
-
-### 📊 Data Analysis
-- 📈 Parity plots for ML model validation
-- 💾 Converged frame extraction from trajectories
-- 🌡️ Temperature, volume, and pressure analysis from MD simulations
-- 📐 Bulk modulus analysis with Birch-Murnaghan EOS fitting
-
-## 📦 Dependencies
-
-### 🐍 Python Packages
-- `numpy` - Numerical computations
-- `matplotlib` - Plotting and visualization
-- `scipy` - Scientific computing (for curve fitting in bulk modulus analysis)
-- `ase` (Atomic Simulation Environment) - Structure manipulation and I/O
-- `pymatgen` - Materials analysis (optional, for some scripts)
-
-### 💻 External Software
-- ⚛️ VASP 6.x
-- 🤖 MACE (Machine Learning Atomic Cluster Expansion)
-- 🖥️ SLURM (for job management scripts)
-- 🔬 LAMMPS (for some installation scripts)
-
-## 🚀 Usage Examples
-
-### 🔢 Calculate KPOINTS for all structures
 ```bash
+# 1) create env (example)
+python -m venv .venv
+source .venv/bin/activate
+pip install numpy scipy matplotlib ase pandas
+
+# 2) common workflow examples
 python VASP_scripts/kpoints_calculator.py /path/to/structures --k 25
+python VASP_scripts/prepare_directories_for_npt.py /path/to/structures --temps 300,500,700
+python data_management/extract_optimized_frames.py /path/to/runs -o optimized_frames.xyz
+python Data_plotting/parity_plot_per_atom.py output.xyz
 ```
 
-### ⚙️ Optimize NPT MD parameters
-```bash
-python INCAR_NPT_preparation/npt_incar_optimizer.py /path/to/md/runs --backup
-```
+## Repository Map
 
-### 📂 Prepare MD directories for multiple temperatures
-```bash
-python INCAR_NPT_preparation/prepare_directories_for_md.py /path/to/structures --temps 300,500,700,900
-```
+### `VASP_scripts`
 
-### 🤖 Train MACE model (single GPU)
-```bash
-cd /path/to/training/data  # Directory containing .xyz training file
-sbatch MACE_scripts/mace_1gpu.sh
-```
+- `prepare_directories_for_npt.py`: combined workflow for temperature folder creation, NPT parameter updates, and parallelization tuning.
+- `bulkmodulus_setup.py`: creates strained `V_...%` directories and prepares single-point EOS runs.
+- `extract_poscars_from_xyz.py`: splits an extxyz file into per-structure DFT folders (`POSCAR/INCAR/KPOINTS`).
+- `kpoints_calculator.py`: recommends/writes KPOINTS grids from POSCAR lattice lengths.
+- `set_magmom_nelect.py`: recursively updates `MAGMOM` and `NELECT` using `POSCAR`+`POTCAR`.
+- `smass_set_recursive.py`: computes and writes `SMASS` from `TEBEG`, POSCAR geometry, and DOF.
+- `optimize_vasp_incar.py`: analyzes system size + k-point density to tune `NCORE/NPAR/KPAR/NSIM`.
+- `setup_dft_directories.py`: organizes `POSCAR.*` files into run directories and regenerates INCAR/KPOINTS.
+- `update_incar_files.py`: bulk rewrite of selected INCAR keys for electronic-structure style runs.
+- `prepare_for_electronic_structure.py`: switches INCAR defaults for post-relaxation electronic calculations.
 
-### 🔀 Train MACE model (2 GPUs, distributed)
-```bash
-cd /path/to/training/data  # Directory containing .xyz training file
-sbatch MACE_scripts/mace_2gpus.sh
-```
+### `data_management`
 
-### ⚡ Train MACE model (4 GPUs, distributed)
-```bash
-cd /path/to/training/data  # Directory containing .xyz training file
-sbatch MACE_scripts/mace_4gpus.sh
-```
+- Trajectory extraction:
+  - `extract_all_frames.py`: all OUTCAR frames -> one extxyz.
+  - `extract_optimized_frames.py`: lowest-energy frame per OUTCAR.
+  - `extract_frames_from_md.py`: midpoint frame extraction for MD runs.
+  - `extract_bulk_modulus_lowest_10_frames.py`: lowest-energy subset from EOS directories.
+- Conversion/prep:
+  - `convert_trajectory_to_extxyz.py`, `poscar_to_lammps.py`, `gaussian_to_poscar.py`, `unwrap_xdatcar.py`.
+- Dataset statistics and curation:
+  - `calculate_element_concentration_in_xyz.py`, `convergence_separation.py`, `extract_average_md_volume.py`.
+  - `cull_combined_global.py` and `cull_amorphous_structures.py` (QUEST-based compression/stratified culling).
+  - `filter_structures.py` (distance-based filtering), `combine_pngs.py`.
+- Volume/EOS helpers:
+  - `predict_optimal_volume.py`, `write_optimal_volume_poscars.py`, `match_interfaces_to_dataframe.py`.
+- Shell helpers:
+  - `cleanup_lammps_outputs.sh`, `copy_a_file_recursively.sh`, `plot_md_temperature.sh`.
 
-### 🤖 Evaluate MACE model
-```bash
-sbatch MACE_scripts/eval_configs.sh --model model.model --configs structures.xyz
-```
+### `Data_plotting`
 
-### 📤 Submit all VASP jobs
-```bash
-bash SLURM_management/submit_all_jobs.sh /path/to/calculations
-```
+- MLFF diagnostics:
+  - `parity_plot_per_atom.py`, `parity_plot_per_species.py`, `plot_xyz_energies_forces.py`.
+- MD analysis:
+  - `plot_md_pvt.py` (OUTCAR quick T/V/P plotting, GUI or ASCII fallback).
+  - `VACF_RDF_MSD_evaluation.py`, `RDF_MSD_evaluation.py`, `DFT_RDF_MSD_plotting.py`, `VPS_PSD_evaluation.py`, `PDF_K_plotting.py`.
+- EOS/volume plots:
+  - `plot_bulk_modulus.py`, `plot_bulk_modulus_individual.py`, `plot_bulk_modulus_per_atom.py`, `plot_volume_lammps_vs_vasp.py`.
+- Dataset composition:
+  - `plot_frame_distribution.py`.
 
-### 👀 Check job status
-```bash
-bash SLURM_management/check_jobs.sh
-```
+### `MLFF`
 
-### 📈 Generate parity plots
-```bash
-python data_management/parity_plot_per_atom.py mace_vs_ref.xyz
-```
+- Evaluation:
+  - `eval_configs.sh`: autodetects MACE (`.model`) vs Allegro (`.ckpt`) and writes `output.xyz`.
+  - `eval_configs_uma.sh`: UMA checkpoint evaluation with optional stress metrics.
+  - `identify_mlff_outliers.py`: ranks worst structures by relative energy/force/stress errors.
+- MACE training submit scripts:
+  - `MACE_scripts/mace_1gpu.sh`, `mace_2gpus.sh`, `mace_4gpus.sh`.
+- Allegro conversion and launch scripts:
+  - `ALLEGRO_scripts/convert_ckpt_to_pth.py`, `convert_ckpt_to_pt2.py`.
+  - `ALLEGRO_scripts/allegro_training_submit_scripts/*.sh`.
+  - `ALLEGRO_scripts/lammps_allegro_submit_scripts/*.sh`.
+  - `ALLEGRO_scripts/setup_nequip_env_for_pt2_lammps.sh`.
 
-### 📐 Set up bulk modulus calculations
-```bash
-python VASP_scripts/bulkmodulus_setup.py /path/to/structures --min -10.0 --max 10.0 --npts 13
-```
+### `cluster_management`
 
-### 📊 Analyze bulk modulus results
-```bash
-python Data_plotting/plot_bulk_modulus.py /path/to/bulk_modulus/calculations
-```
+- `submit_all_jobs.sh`: recursive `sbatch` of `submit.vasp6.sh`.
+- `check_jobs.sh`: prints state/reason and attempts run progress from `OSZICAR`/`INCAR`.
+- `cancel_jobs_in_dirs.py`: cancel SLURM jobs under chosen root paths.
+- `cancel_jobs_in_dirs_pbs.py`: PBS variant.
+- `clean_dev_shm_themis.sh`: cleanup utility for shared-memory usage.
 
-### 🌡️ Plot MD temperature, volume, and pressure
+### `software`
+
+- `Polaris_software`:
+  - GPU VASP compile/run guides and scripts (`VASP_GPU_COMPILATION_GUIDE.md`, `compile_vasp_gpu_final.sh`, `submit.vasp6.sh`).
+  - LAMMPS/Kokkos/MACE install guide and script.
+- `Palmetto_software`:
+  - `build_lammps_mace_palmetto.sh`.
+
+## Dependencies
+
+Core Python packages used across scripts:
+
+- `numpy`
+- `scipy`
+- `matplotlib`
+- `ase`
+- `pandas`
+
+Optional or script-specific packages:
+
+- `pymatgen` (some POSCAR/composition tasks)
+- `torch`, `mace-torch`, `nequip`, `nequip-allegro`, `fairchem-core` (MLFF workflows)
+- `quests` (dataset compression scripts)
+
+External tooling:
+
+- VASP, LAMMPS, SLURM (and PBS for one script), plus cluster module stack where applicable.
+
+## Typical Commands
+
 ```bash
-python Data_plotting/plot_md_pvt.py OUTCAR
-# Or force ASCII output:
+# Bulk modulus setup
+python VASP_scripts/bulkmodulus_setup.py /path/to/bulk_modulus_calculations --min -20 --max 20 --npts 40
+
+# Unified MLFF evaluation (MACE or Allegro) from a submit directory
+sbatch MLFF/eval_configs.sh
+
+# UMA evaluation
+sbatch MLFF/eval_configs_uma.sh --task omat
+
+# Plot OUTCAR thermodynamics quickly
 python Data_plotting/plot_md_pvt.py OUTCAR --ascii
+
+# Recursively submit VASP jobs
+bash cluster_management/submit_all_jobs.sh /path/to/tree
 ```
 
-## 💡 Notes
+## Notes
 
-- ✅ Most scripts include `--dry-run` options for testing before making changes
-- 💾 Many scripts preserve existing files by creating backups
-- 🔄 Scripts are designed to work recursively across directory structures
-- 🎮 GPU-related scripts are configured for NVIDIA A100 GPUs and CUDA-aware MPI
-
-## 🤝 Contributing
-
-This repository contains scripts developed for specific computational workflows. When adapting for your own use:
-- 🔍 Review script parameters and adjust defaults as needed
-- 🔧 Update cluster-specific paths in SLURM scripts
-- ⚛️ Modify atomic data and parameters in optimization scripts for your systems
-
-## 📄 License
-
-This repository contains utility scripts for computational materials science workflows. Use and modify as needed for your research
+- Most scripts are standalone and are intended to run from CLI without package installation.
+- Many defaults are cluster-specific (partitions, conda env names, module names); adjust before production use.
+- Some scripts intentionally recurse through large directory trees; test with a small subset first.
