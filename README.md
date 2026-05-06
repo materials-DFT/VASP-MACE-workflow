@@ -1,4 +1,4 @@
-# VASP-MACE-workflow
+# DFT-MLFF-MD-Toolkit
 
 Utilities for VASP/MLFF workflows on HPC systems: structure preparation, INCAR/KPOINTS automation, SLURM job management, trajectory conversion/extraction, MLFF evaluation, and plotting.
 
