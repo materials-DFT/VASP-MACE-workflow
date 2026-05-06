@@ -34,6 +34,7 @@ Examples
   %(prog)s dft/ mlff/ --series-prefixes DFT MLFF
   %(prog)s dft/300K mlff/300K --labels DFT MLFF
   %(prog)s 300K/ --all-frames
+  %(prog)s 300K/ --skip-equil-15k
   %(prog)s 300K/ --no-kk          # heteronuclear K–X only (drop K–K)
 
 Requires a graphical session: ``DISPLAY`` must be set (X11). Figures are shown
@@ -266,18 +267,26 @@ def main() -> None:
         action="store_true",
         help="omit the K–K partial g(r) (default: K–K is plotted with other K–X channels)",
     )
-    ap.add_argument(
+    _eq = ap.add_mutually_exclusive_group()
+    _eq.add_argument(
         "--skip",
         type=int,
         default=core.DEFAULT_EQUIL_SKIP_FRAMES,
         metavar="N",
         help="skip first N trajectory frames "
-        f"(default: {core.DEFAULT_EQUIL_SKIP_FRAMES}; --all-frames → 0)",
+        f"(default: {core.DEFAULT_EQUIL_SKIP_FRAMES}; incompatible with "
+        "--all-frames/--skip-equil-15k)",
     )
-    ap.add_argument(
+    _eq.add_argument(
         "--all-frames",
         action="store_true",
         help="use the full trajectory (no equilibration skip)",
+    )
+    _eq.add_argument(
+        "--skip-equil-15k",
+        action="store_true",
+        help=f"skip first {core.EQUIL_SKIP_15K_FRAMES:,} trajectory frames "
+        "(incompatible with --skip/--all-frames)",
     )
     ap.add_argument(
         "--max-frames",
@@ -323,7 +332,11 @@ def main() -> None:
         help="skip matplotlib (exit after analysis prints)",
     )
     args = ap.parse_args()
-    skip_frames = 0 if args.all_frames else args.skip
+    skip_frames = core.resolve_equil_skip_frames(
+        args.all_frames,
+        args.skip_equil_15k,
+        args.skip,
+    )
 
     sim_dirs, origin_indices = core.resolve_dirs(args.dirs)
     print(f"Resolved {len(sim_dirs)} simulation(s):")

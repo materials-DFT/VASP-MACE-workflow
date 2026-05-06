@@ -2,9 +2,9 @@
 #SBATCH --job-name=MLFF_Eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --time=08:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=eval_output.log
-#SBATCH --partition=gpucluster
+#SBATCH --partition=gpuquick
 #SBATCH --gres=gpu:1
 
 # Unified evaluation script for MACE and Allegro (NequIP) models.

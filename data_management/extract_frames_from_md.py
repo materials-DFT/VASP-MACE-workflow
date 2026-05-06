@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # The following SBATCH directives are optional. They set job parameters when
-# submitting this script directly with sbatch. The --output and --error
-# directives are commented out so that only the internal log (e.g. md_two_frames.log)
-# and xyz file are written.
+# submitting this script directly with sbatch. Route Slurm stdout/stderr to
+# /dev/null so only the internal log (e.g. md_two_frames.log) and xyz file are
+# written in the working directory.
 #
 #SBATCH --job-name=extract_md
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --time=02:00:00
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
 """
 Extract 2 frames from each VASP MD OUTCAR and write to a single extended XYZ file.
 
@@ -19,22 +21,62 @@ Output is extended XYZ (extxyz) with energy, forces, stress, and lattice,
 like extract_frames_for_mlff.py. The log file lists each OUTCAR, frame indices
 extracted, and energies.
 
+By default, only electronically converged MD steps are used: per-step NELM
+(oszicar/INCAR) and OUTCAR chunk failure messages (see --no-convergence-check
+to disable). If the exact 1/3 or 2/3 target step is not converged, the script
+searches forward to the next converged step for that target.
+
 Requires: ase
 Run interactively:  python extract_frames_from_md.py .
 Run on cluster:     sbatch extract_frames_from_md.py .
 (For sbatch, make script executable: chmod +x extract_frames_from_md.py)
 
 Usage:
-  python extract_frames_from_md.py [directory] [--out frames.xyz] [--md-dir .] [--log ...]
+  python extract_frames_from_md.py [directory] [--out frames.xyz] [--md-dir .] [--log ...] [--no-convergence-check]
   (directory defaults to . if omitted, like extract_frames_for_mlff.py)
 """
 
 import argparse
+import importlib.util
+import os
 import sys
 from pathlib import Path
 
 from ase.io import iread, write
 
+def _load_per_step_convergence():
+    """
+    Import helper from local module, including sbatch spool fallback paths.
+
+    Under `sbatch script.py`, Slurm executes a copied script from /var/spool,
+    so sibling imports are not discoverable unless we probe explicit locations.
+    """
+    try:
+        from vasp_step_convergence import per_step_electronically_converged as func
+        return func
+    except ModuleNotFoundError:
+        candidates = [
+            Path.cwd() / "vasp_step_convergence.py",
+            Path(__file__).resolve().parent / "vasp_step_convergence.py",
+            Path(os.environ.get("SLURM_SUBMIT_DIR", "")) / "vasp_step_convergence.py",
+            Path.home() / "VASP-MACE-workflow" / "data_management" / "vasp_step_convergence.py",
+        ]
+        for module_path in candidates:
+            if not module_path.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(
+                "vasp_step_convergence", module_path
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, "per_step_electronically_converged"):
+                return module.per_step_electronically_converged
+        raise
+
+
+per_step_electronically_converged = _load_per_step_convergence()
 
 # =============================================================================
 # Logging (tee to stdout + log file)
@@ -105,7 +147,16 @@ def read_two_frames(outcar: Path, i: int, j: int):
     return [got[i], got[j]] if i in got and j in got else []
 
 
-def run_extraction(md_dir: Path, out_path: Path):
+def find_next_converged(ok_list, start: int, min_index: int = 0):
+    """Return first converged frame index >= max(start, min_index), else None."""
+    begin = max(start, min_index)
+    for k in range(begin, len(ok_list)):
+        if ok_list[k]:
+            return k
+    return None
+
+
+def run_extraction(md_dir: Path, out_path: Path, check_convergence: bool = True):
     """Extract 2 mid-trajectory frames per OUTCAR; write extended XYZ (energy, forces, stress) and log details."""
     md_dir = md_dir.resolve()
     if not md_dir.is_dir():
@@ -116,6 +167,13 @@ def run_extraction(md_dir: Path, out_path: Path):
     print("=" * 80)
     print(f"Search directory: {md_dir}")
     print(f"Output: {out_path} (extended XYZ: energy, forces, stress)")
+    if check_convergence:
+        print(
+            "Convergence filter: ON (OSZICAR/NELM + OUTCAR per-step; "
+            "for 1/3 and 2/3 targets, scan forward to next converged frame)"
+        )
+    else:
+        print("Convergence filter: OFF")
     print()
 
     outcars_list = list(find_outcars(md_dir))
@@ -127,6 +185,7 @@ def run_extraction(md_dir: Path, out_path: Path):
 
     processed = 0
     skipped = 0
+    skipped_noconv = 0
     frames_written = 0
     first_write = True
 
@@ -137,12 +196,26 @@ def run_extraction(md_dir: Path, out_path: Path):
         pass
 
     for idx, (outcar, run_id) in enumerate(outcars_list):
-        try:
-            n_frames = count_frames(outcar)
-        except Exception as e:
-            print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: {e}")
-            skipped += 1
-            continue
+        if check_convergence:
+            sim = outcar.parent
+            ok_list = per_step_electronically_converged(
+                outcar, sim / "INCAR", sim / "OSZICAR"
+            )
+            if ok_list is None:
+                print(
+                    f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: could not parse "
+                    "per-step convergence (OUTCAR chunk read failed)"
+                )
+                skipped += 1
+                continue
+            n_frames = len(ok_list)
+        else:
+            try:
+                n_frames = count_frames(outcar)
+            except Exception as e:
+                print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: {e}")
+                skipped += 1
+                continue
 
         if n_frames <= 0:
             print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: no frames")
@@ -153,8 +226,32 @@ def run_extraction(md_dir: Path, out_path: Path):
         if i == j:
             j = min(j + 1, n_frames - 1)
 
+        selected_i, selected_j = i, j
+        if check_convergence:
+            # Preserve the mid-trajectory intent while avoiding unconverged steps:
+            # move each target forward to the next converged frame.
+            selected_i = find_next_converged(ok_list, i)
+            if selected_i is None:
+                print(
+                    f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: no converged frame "
+                    f"at or after target index {i} (1/3)"
+                )
+                skipped_noconv += 1
+                skipped += 1
+                continue
+
+            selected_j = find_next_converged(ok_list, j, min_index=selected_i + 1)
+            if selected_j is None:
+                print(
+                    f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: no second converged "
+                    f"frame at or after target index {j} (2/3) beyond first index {selected_i}"
+                )
+                skipped_noconv += 1
+                skipped += 1
+                continue
+
         try:
-            two = read_two_frames(outcar, i, j)
+            two = read_two_frames(outcar, selected_i, selected_j)
         except Exception as e:
             print(f"[{idx + 1}/{len(outcars_list)}] Skip {outcar}: {e}")
             skipped += 1
@@ -176,7 +273,13 @@ def run_extraction(md_dir: Path, out_path: Path):
         except (AttributeError, RuntimeError):
             e_str = ""
         print(f"[{idx + 1}/{len(outcars_list)}] {rel_path}")
-        print(f"  Frames: {n_frames}  ->  extracting indices {i}, {j} (1/3, 2/3){e_str}")
+        if check_convergence:
+            print(
+                f"  Frames: {n_frames}  ->  targets {i}, {j}; extracting converged "
+                f"indices {selected_i}, {selected_j}{e_str}"
+            )
+        else:
+            print(f"  Frames: {n_frames}  ->  extracting indices {i}, {j} (1/3, 2/3){e_str}")
         print(f"  run_id: {run_id}")
         print()
 
@@ -198,6 +301,8 @@ def run_extraction(md_dir: Path, out_path: Path):
     print(f"  OUTCARs found:    {len(outcars_list)}")
     print(f"  Processed:        {processed}")
     print(f"  Skipped:          {skipped}")
+    if check_convergence and skipped_noconv:
+        print(f"  Skipped (not converged at 1/3 or 2/3): {skipped_noconv}")
     print(f"  Total frames:     {frames_written}")
     print()
 
@@ -229,6 +334,11 @@ def main():
         default=None,
         help="Log file path (default: <output_stem>.log)",
     )
+    p.add_argument(
+        "--no-convergence-check",
+        action="store_true",
+        help="Extract 1/3 and 2/3 frames even when OSZICAR/OUTCAR suggest non-converged SCF",
+    )
     args = p.parse_args()
 
     work_dir = Path(args.base_path).resolve()
@@ -244,7 +354,7 @@ def main():
     try:
         tee = Tee(log_path)
         sys.stdout = tee
-        run_extraction(md_dir, args.out)
+        run_extraction(md_dir, args.out, check_convergence=not args.no_convergence_check)
     finally:
         if tee is not None:
             sys.stdout = tee._stream

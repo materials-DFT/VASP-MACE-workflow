@@ -3,7 +3,10 @@
 Scan specified directories for VASP OUTCARs, find the lowest-energy
 frame per directory (phase), then extract the N frames closest in energy
 to that minimum. Uses ASE to read OUTCAR and write extended XYZ (lattice,
-energy, forces, stress). OUTCAR only.
+energy, forces, stress). OUTCAR only. By default, only electronically
+converged frames are used: if the last ionic step is unconverged, the script
+falls back to the nearest earlier converged frame. Use --no-convergence-check
+for the previous behavior.
 
 Difference from extract_optimized_frames.py:
   - Optimized frames: ONE frame per OUTCAR (every volume point), extended XYZ.
@@ -11,7 +14,6 @@ Difference from extract_optimized_frames.py:
     same extended XYZ format. Use for bulk-modulus / E(V) fitting.
 """
 
-import re
 import sys
 import argparse
 import os
@@ -22,6 +24,16 @@ try:
 except ImportError:
     print("Error: ASE is required. Install with: pip install ase", file=sys.stderr)
     sys.exit(1)
+
+from vasp_step_convergence import per_step_electronically_converged
+
+
+def _last_converged_index(ok: list[bool]) -> int | None:
+    """Return the last converged frame index, or None if no converged frame exists."""
+    for idx in range(len(ok) - 1, -1, -1):
+        if ok[idx]:
+            return idx
+    return None
 
 
 # ============================================================================
@@ -49,12 +61,14 @@ class Tee:
         self._file.close()
 
 
-def _collect_candidates(top_path):
+def _collect_candidates(top_path, check_convergence: bool = True):
     """
     Direct children that have OUTCAR (OUTCAR only).
 
     For consistency with other extraction scripts, use ASE to read the
-    OUTCAR and take the potential energy of the final ionic step.
+    OUTCAR and take the potential energy of the selected ionic step.
+    When check_convergence is True, selection starts at the final step and
+    falls back to the nearest earlier converged step if needed.
     """
     candidates = []
     for sub in sorted(top_path.iterdir()):
@@ -69,7 +83,21 @@ def _collect_candidates(top_path):
             continue
         if not images:
             continue
-        last = images[-1]
+        selected_idx = len(images) - 1
+        if check_convergence:
+            ok = per_step_electronically_converged(
+                outcar, sub / "INCAR", sub / "OSZICAR"
+            )
+            if (
+                ok is None
+                or len(ok) != len(images)
+            ):
+                continue
+            selected = _last_converged_index(ok)
+            if selected is None:
+                continue
+            selected_idx = selected
+        last = images[selected_idx]
         try:
             energy = float(last.get_potential_energy())
         except Exception:
@@ -87,22 +115,28 @@ def make_run_id(root: Path, outcar_path: Path) -> str:
     return abs_dir
 
 
-def process_directory(top_dir, num_frames=10):
+def process_directory(
+    top_dir, num_frames: int = 10, check_convergence: bool = True
+):
     """
-    For one directory (e.g. alpha/), find subdirs with OUTCAR, get final energy
-    from each, find minimum, then the num_frames subdirs closest in energy.
-    Return list of ASE Atoms (final frame from each selected OUTCAR).
+    For one directory (e.g. alpha/), find subdirs with OUTCAR, get selected-frame
+    energy from each, find minimum, then the num_frames subdirs closest in energy.
+    Return list of ASE Atoms (selected frame from each chosen OUTCAR).
     """
     top_path = Path(top_dir).resolve()
     if not top_path.is_dir():
         print(f"Not a directory: {top_path}", file=sys.stderr)
         return []
 
-    candidates = _collect_candidates(top_path)
+    candidates = _collect_candidates(top_path, check_convergence=check_convergence)
     if not candidates:
         all_frames = []
         for child in sorted([p for p in top_path.iterdir() if p.is_dir()]):
-            all_frames.extend(process_directory(child, num_frames))
+            all_frames.extend(
+                process_directory(
+                    child, num_frames, check_convergence=check_convergence
+                )
+            )
         return all_frames
 
     min_energy = min(e for _, e in candidates)
@@ -114,17 +148,43 @@ def process_directory(top_dir, num_frames=10):
         outcar = sub / "OUTCAR"
         try:
             images = read(str(outcar), index=":")
-            atoms = images[-1]
-            atoms.info["run_id"] = make_run_id(top_path, outcar)
-            frames.append(atoms)
         except Exception as e:
             print(f"Failed to read OUTCAR with ASE: {outcar} ({e})", file=sys.stderr)
             continue
+        if not images:
+            continue
+        selected_idx = len(images) - 1
+        if check_convergence:
+            ok = per_step_electronically_converged(
+                outcar, sub / "INCAR", sub / "OSZICAR"
+            )
+            if (
+                ok is None
+                or len(ok) != len(images)
+            ):
+                print(
+                    f"Warning: convergence list invalid on re-read, skipping: {outcar}",
+                    file=sys.stderr,
+                )
+                continue
+            selected = _last_converged_index(ok)
+            if selected is None:
+                print(
+                    f"Warning: no converged frame in trajectory, skipping: {outcar}",
+                    file=sys.stderr,
+                )
+                continue
+            selected_idx = selected
+        atoms = images[selected_idx]
+        atoms.info["run_id"] = make_run_id(top_path, outcar)
+        frames.append(atoms)
 
     if not frames:
         print(f"No valid structures under {top_path}", file=sys.stderr)
         return []
-    print(f"Collected {len(frames)} frames from {top_path} (min E = {min_energy:.6f} eV)")
+    print(
+        f"Collected {len(frames)} frames from {top_path} (min E = {min_energy:.6f} eV)"
+    )
     return frames
 
 
@@ -154,6 +214,11 @@ def main():
         default=None,
         help="Log file path (default: <output_stem>.log, e.g. combined_lowest_frames.log)",
     )
+    parser.add_argument(
+        "--no-convergence-check",
+        action="store_true",
+        help="Use final ionic step even if OSZICAR/OUTCAR suggest non-converged SCF",
+    )
     args = parser.parse_args()
 
     # Log file: default to <output_stem>.log
@@ -165,9 +230,12 @@ def main():
         tee = Tee(args.log)
         sys.stdout = tee
 
+        check = not args.no_convergence_check
         all_frames = []
         for d in args.directories:
-            all_frames.extend(process_directory(d, args.num_frames))
+            all_frames.extend(
+                process_directory(d, args.num_frames, check_convergence=check)
+            )
 
         if not all_frames:
             print("No frames collected.", file=sys.stderr)

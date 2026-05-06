@@ -123,17 +123,26 @@ Examples:
         nargs="+",
         help="optional manual labels (must match number of resolved runs)",
     )
-    ap.add_argument(
+    _eq = ap.add_mutually_exclusive_group()
+    _eq.add_argument(
         "--skip",
         type=int,
         default=core.DEFAULT_EQUIL_SKIP_FRAMES,
         metavar="N",
-        help=f"skip first N frames (default: {core.DEFAULT_EQUIL_SKIP_FRAMES})",
+        help="skip first N frames "
+        f"(default: {core.DEFAULT_EQUIL_SKIP_FRAMES}; incompatible with "
+        "--all-frames/--skip-equil-15k)",
     )
-    ap.add_argument(
+    _eq.add_argument(
         "--all-frames",
         action="store_true",
         help="use all frames (same as --skip 0)",
+    )
+    _eq.add_argument(
+        "--skip-equil-15k",
+        action="store_true",
+        help=f"skip first {core.EQUIL_SKIP_15K_FRAMES:,} frames "
+        "(incompatible with --skip/--all-frames)",
     )
     ap.add_argument("--max-frames", type=int, default=None, help="max frames per run")
     ap.add_argument("--dt", type=float, default=None, help="override timestep in fs")
@@ -153,7 +162,11 @@ Examples:
     ap.add_argument("--no-maximize", action="store_true", help="do not maximize GUI window")
     args = ap.parse_args()
 
-    skip_frames = 0 if args.all_frames else args.skip
+    skip_frames = core.resolve_equil_skip_frames(
+        args.all_frames,
+        args.skip_equil_15k,
+        args.skip,
+    )
     sim_dirs, _ = core.resolve_dirs(args.dirs)
 
     print(f"Resolved {len(sim_dirs)} simulation(s):")

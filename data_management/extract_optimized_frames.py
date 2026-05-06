@@ -4,10 +4,12 @@ Extract the lowest-energy frame from each VASP OUTCAR into a single extended XYZ
 
 For each OUTCAR found under the given directory, reads the full ionic trajectory,
 picks the frame with the minimum total energy, and writes one combined XYZ with
-one frame per structure (energy, forces, lattice included).
+one frame per structure (energy, forces, lattice included). By default only
+converged ionic steps are considered; use --no-convergence-check to take the
+global minimum over all steps (previous behavior).
 
 Usage:
-  python extract_frames.py <directory> [-o output.xyz]
+  python extract_optimized_frames.py <directory> [-o output.xyz] [--no-convergence-check]
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ try:
 except ImportError:
     print("Error: ASE is required. Install with: pip install ase", file=sys.stderr)
     sys.exit(1)
+
+from vasp_step_convergence import lowest_converged_frame
 
 
 # ============================================================================
@@ -88,6 +92,11 @@ def main() -> None:
         default=None,
         help="Log file path (default: <output_stem>.log, e.g. optimized_frames.log)",
     )
+    parser.add_argument(
+        "--no-convergence-check",
+        action="store_true",
+        help="Minimize energy over all ionic steps (ignore SCF convergence heuristics)",
+    )
     args = parser.parse_args()
 
     root = args.directory.resolve()
@@ -109,21 +118,34 @@ def main() -> None:
             print("Error: No OUTCAR files found.", file=sys.stderr)
             sys.exit(1)
 
+        check = not args.no_convergence_check
         if not args.quiet:
-            print(f"Found {len(outcars)} OUTCAR(s). Extracting lowest-energy frame per structure...")
+            mode = "lowest-energy converged frame" if check else "lowest-energy frame"
+            print(f"Found {len(outcars)} OUTCAR(s). Extracting {mode} per structure...")
 
         best_frames = []
         for p in outcars:
             try:
                 images = read(str(p), index=":")
-                best = min(images, key=lambda a: a.get_potential_energy())
-                best.info["run_id"] = make_run_id(root, p)
-                best_frames.append(best)
-                if not args.quiet:
-                    e = best.get_potential_energy()
-                    print(f"  {p.relative_to(root)}: {len(images)} frame(s) -> E = {e:.4f} eV")
             except Exception as e:
                 print(f"Warning: Could not read {p}: {e}", file=sys.stderr)
+                continue
+            if check:
+                best, err = lowest_converged_frame(p, images)
+                if err is not None:
+                    print(
+                        f"Warning: Skipping {p} ({err})",
+                        file=sys.stderr,
+                    )
+                    continue
+                assert best is not None
+            else:
+                best = min(images, key=lambda a: a.get_potential_energy())
+            best.info["run_id"] = make_run_id(root, p)
+            best_frames.append(best)
+            if not args.quiet:
+                e = best.get_potential_energy()
+                print(f"  {p.relative_to(root)}: {len(images)} frame(s) -> E = {e:.4f} eV")
 
         if not best_frames:
             print("Error: No frames could be read from any OUTCAR.", file=sys.stderr)

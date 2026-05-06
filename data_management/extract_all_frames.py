@@ -6,7 +6,8 @@ Uses the same extraction method as extract_frames_for_mlff.py and extract_optimi
 ASE reads OUTCAR trajectory (energy, forces, stress, lattice) and writes extended XYZ.
 
 Unlike extract_frames_for_mlff.py (stride/skip/cap) or extract_optimized_frames.py (lowest-energy
-only), this script extracts every frame from every OUTCAR found under the given directory.
+only), this script extracts every electronically converged frame from every OUTCAR found under
+the given directory.
 
 Usage:
   python extract_all_frames.py <directory> [-o output.xyz]
@@ -24,6 +25,8 @@ try:
 except ImportError:
     print("Error: ASE is required. Install with: pip install ase", file=sys.stderr)
     sys.exit(1)
+
+from vasp_step_convergence import filter_images_converged_only
 
 
 # ============================================================================
@@ -117,20 +120,43 @@ def main() -> None:
         sys.stdout = tee
 
         if not args.quiet:
-            print(f"Found {len(outcars)} OUTCAR(s). Extracting all frames...")
+            print(f"Found {len(outcars)} OUTCAR(s). Extracting converged frames...")
 
         all_frames = []
+        skipped = 0
         for p in outcars:
             try:
                 images = read(str(p), index=":")
-                run_id = make_run_id(root, p)
-                for atoms in images:
-                    atoms.info["run_id"] = run_id
-                all_frames.extend(images)
-                if not args.quiet:
-                    print(f"  {p.relative_to(root)}: {len(images)} frame(s)")
             except Exception as e:
                 print(f"Warning: Could not read {p}: {e}", file=sys.stderr)
+                continue
+            run_id = make_run_id(root, p)
+            filtered, err = filter_images_converged_only(p, images)
+            if err is not None:
+                print(
+                    f"Warning: Skipping {p} ({err})",
+                    file=sys.stderr,
+                )
+                skipped += 1
+                continue
+            assert filtered is not None
+            to_write = filtered
+            for atoms in to_write:
+                atoms.info["run_id"] = run_id
+            all_frames.extend(to_write)
+            if not args.quiet:
+                if len(to_write) != len(images):
+                    print(
+                        f"  {p.relative_to(root)}: {len(to_write)}/{len(images)} "
+                        f"frame(s) (converged only)"
+                    )
+                else:
+                    print(f"  {p.relative_to(root)}: {len(to_write)} frame(s)")
+        if not args.quiet and skipped:
+            print(
+                f"  Skipped {skipped} OUTCAR(s) (convergence check failed or no data).",
+                file=sys.stderr,
+            )
 
         if not all_frames:
             print("Error: No frames could be read from any OUTCAR.", file=sys.stderr)

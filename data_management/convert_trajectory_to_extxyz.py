@@ -4,6 +4,8 @@ Convert a LAMMPS trajectory dump (lammpstrj) to extxyz.
 
 Example:
   python convert_trajectory_to_extxyz.py trajectory.lammpstrj
+  python convert_trajectory_to_extxyz.py .                    # recursive under .
+  python convert_trajectory_to_extxyz.py 300K/ 700K/
 """
 
 from __future__ import annotations
@@ -11,42 +13,54 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
 from ase.io import iread, write
 from ase.data import atomic_masses, chemical_symbols
 
 
-def resolve_input_path(path: str) -> str:
+def collect_lammpstrj_files(
+    paths: List[str], *, recursive: bool = True
+) -> List[str]:
     """
-    Resolve input as either:
-      - a direct trajectory file path, or
-      - a directory containing one or more *.lammpstrj files.
+    Expand CLI paths to a sorted, unique list of *.lammpstrj file paths.
+
+    Each path may be a trajectory file or a directory. Directories are
+    scanned for .lammpstrj (recursively by default).
     """
-    apath = os.path.abspath(path)
-    if os.path.isfile(apath):
-        return apath
+    found: Set[str] = set()
+    for path in paths:
+        apath = os.path.abspath(path)
+        if os.path.isfile(apath):
+            if apath.lower().endswith(".lammpstrj"):
+                found.add(apath)
+            else:
+                raise ValueError(f"Not a .lammpstrj file: {path}")
+        elif os.path.isdir(apath):
+            if recursive:
+                for root, _dirs, files in os.walk(apath):
+                    for name in files:
+                        if name.lower().endswith(".lammpstrj"):
+                            found.add(os.path.join(root, name))
+            else:
+                for name in os.listdir(apath):
+                    fp = os.path.join(apath, name)
+                    if (
+                        name.lower().endswith(".lammpstrj")
+                        and os.path.isfile(fp)
+                    ):
+                        found.add(fp)
+        else:
+            raise FileNotFoundError(f"Input path not found: {path}")
+    return sorted(found)
 
-    if not os.path.isdir(apath):
-        raise FileNotFoundError(f"Input path not found: {path}")
 
-    candidates = sorted(
-        os.path.join(apath, name)
-        for name in os.listdir(apath)
-        if name.lower().endswith(".lammpstrj")
-        and os.path.isfile(os.path.join(apath, name))
-    )
-    if not candidates:
-        raise FileNotFoundError(
-            f"No .lammpstrj file found in directory: {apath}"
-        )
-
-    if len(candidates) > 1:
-        print(
-            "Multiple .lammpstrj files found; using first alphabetically: "
-            f"{os.path.basename(candidates[0])}"
-        )
-    return candidates[0]
+def default_output_path_for_trajectory(traj_path: str) -> str:
+    """Sidecar output: same directory, stem replaced with .extxyz."""
+    d = os.path.dirname(os.path.abspath(traj_path))
+    stem = os.path.splitext(os.path.basename(traj_path))[0]
+    return os.path.join(d, f"{stem}.extxyz")
 
 
 def parse_type_map(raw: str) -> Dict[int, str]:
@@ -70,23 +84,68 @@ def parse_type_map(raw: str) -> Dict[int, str]:
     return mapping
 
 
-def map_symbols(atoms, type_map: Dict[int, str]) -> None:
+def map_symbols(
+    atoms,
+    type_map: Dict[int, str],
+    sym_state: Optional[List[Any]] = None,
+) -> None:
+    """Assign chemical symbols using LAMMPS atom types.
+
+    Optionally pass ``sym_state = [frozenset|None, list|None]`` to reuse a lookup
+    table while ``type_map`` is unchanged between frames."""
     if "type" not in atoms.arrays:
         raise KeyError(
             "No 'type' array found in trajectory frame. "
             "Ensure input is a LAMMPS dump with a 'type' column."
         )
+    fk = frozenset(type_map.items())
     atom_types = atoms.arrays["type"]
-    symbols = []
+
+    if sym_state is not None and sym_state[0] == fk:
+        tab = sym_state[1]
+    else:
+        mx_key = max(type_map.keys(), default=0)
+        tab = [None] * (mx_key + 1)
+        for k, v in type_map.items():
+            if k >= 0:
+                tab[k] = v
+        if sym_state is not None:
+            sym_state[0] = fk
+            sym_state[1] = tab
+    ta_max = int(np.max(atom_types))
+    ta_min = int(np.min(atom_types))
+    if ta_min < 0 or ta_max >= len(tab):
+        raise KeyError(
+            f"Atom type out of compiled table ({ta_min}..{ta_max}); "
+            f"type_map keys: {sorted(type_map.keys())}"
+        )
+
+    symbols_list: List[str] = []
+    get = tab.__getitem__
     for t in atom_types:
         it = int(t)
-        if it not in type_map:
+        s = get(it)
+        if s is None:
             raise KeyError(
                 f"Atom type {it} not found in --type-map. "
                 f"Provided keys: {sorted(type_map.keys())}"
             )
-        symbols.append(type_map[it])
-    atoms.set_chemical_symbols(symbols)
+        symbols_list.append(s)
+    atoms.set_chemical_symbols(symbols_list)
+
+
+def frame_needs_element_inference(
+    atom_types_arr: np.ndarray, type_map: Dict[int, str]
+) -> bool:
+    """True if some integer types in ``atom_types_arr`` are missing from ``type_map``."""
+    if atom_types_arr.size == 0:
+        return False
+    uniq = np.unique(atom_types_arr.astype(np.int64, copy=False))
+    keys = type_map.keys()
+    for u in uniq:
+        if int(u) not in keys:
+            return True
+    return False
 
 
 def _to_text(value) -> str:
@@ -290,13 +349,108 @@ def complete_type_map_from_elements(atoms, type_map: Dict[int, str]) -> List[int
     return sorted({t for t in atom_types if t not in type_map})
 
 
+def convert_trajectory(
+    input_path: str, output_path: str, args: argparse.Namespace
+) -> None:
+    """Read one lammpstrj and write frames to output_path as extxyz."""
+    type_map = parse_type_map(args.type_map)
+    discovered_map = discover_type_map(input_path)
+    for k, v in discovered_map.items():
+        type_map.setdefault(k, v)
+
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    sym_cache: List[Any] = [None, None]
+    count_in = 0
+    count_out = 0
+    warned_fallback = False
+    pending_batch: List[Any] = []
+    wb = max(1, int(args.write_batch))
+    write_kwargs = dict(
+        format="extxyz",
+        parallel=False,
+        write_results=False,
+    )
+
+    with open(output_path, "w", encoding="utf-8", newline="\n") as fd:
+        for atoms in iread(input_path, format="lammps-dump-text", index=":"):
+            if count_in % args.stride != 0:
+                count_in += 1
+                continue
+
+            ta = atoms.arrays.get("type")
+            if ta is None:
+                raise KeyError(
+                    "No 'type' array found in trajectory frame. "
+                    "Ensure input is a LAMMPS dump with a 'type' column."
+                )
+
+            if args.auto_complete_map and frame_needs_element_inference(ta, type_map):
+                still_missing = complete_type_map_from_elements(atoms, type_map)
+                if still_missing:
+                    if args.strict_type_map:
+                        raise KeyError(
+                            "Atom types missing from --type-map and could not infer from trajectory "
+                            f"'element' data: {still_missing}. Provided keys: {sorted(type_map.keys())}"
+                        )
+                    for t in still_missing:
+                        type_map[t] = args.fallback_symbol
+                    if not warned_fallback:
+                        print(
+                            "Warning: some atom types could not be inferred from trajectory "
+                            f"'element' data and were mapped to '{args.fallback_symbol}'."
+                        )
+                        warned_fallback = True
+
+            map_symbols(atoms, type_map, sym_state=sym_cache)
+            if args.wrap_atoms:
+                atoms.wrap()
+
+            pending_batch.append(atoms)
+            if len(pending_batch) >= wb:
+                write(fd, pending_batch, **write_kwargs)
+                pending_batch.clear()
+
+            count_in += 1
+            count_out += 1
+
+        if pending_batch:
+            write(fd, pending_batch, **write_kwargs)
+
+    if args.auto_complete_map:
+        print(
+            f"Final type map used: {', '.join(f'{k}:{v}' for k, v in sorted(type_map.items()))}"
+        )
+
+    print(
+        f"Converted {count_out} frame(s) from '{input_path}' to '{output_path}' "
+        f"(read {count_in} total frame(s), stride={args.stride})."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert LAMMPS dump to extxyz.")
     parser.add_argument(
         "input",
+        nargs="+",
         help=(
-            "Input LAMMPS dump file to convert, or a directory containing a "
-            ".lammpstrj file."
+            "One or more LAMMPS dump files and/or directories. "
+            "Directories are searched for *.lammpstrj (recursively by default)."
+        ),
+    )
+    parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="When input is a directory, only look for .lammpstrj in that directory.",
+    )
+    parser.add_argument(
+        "--output",
+        default="",
+        help=(
+            "Output extxyz path (only when exactly one trajectory is converted). "
+            "Default: './trajectory.extxyz' for a single file; for multiple trajectories, "
+            "each input is written next to it as <stem>.extxyz."
         ),
     )
     parser.add_argument(
@@ -322,6 +476,16 @@ def main() -> None:
         type=int,
         default=1,
         help="Write every Nth frame (default: 1).",
+    )
+    parser.add_argument(
+        "--write-batch",
+        type=int,
+        default=64,
+        metavar="N",
+        help=(
+            "Buffer this many converted frames before each extxyz write to the output file "
+            "(default: 64). Larger batches reduce overhead; reduce if memory is tight."
+        ),
     )
     parser.add_argument(
         "--strict-type-map",
@@ -350,55 +514,30 @@ def main() -> None:
 
     if args.stride < 1:
         raise ValueError("--stride must be >= 1")
-    input_path = resolve_input_path(args.input)
 
-    output = "trajectory.extxyz"
+    recursive = not args.no_recursive
+    traj_files = collect_lammpstrj_files(args.input, recursive=recursive)
+    if not traj_files:
+        roots = ", ".join(os.path.abspath(p) for p in args.input)
+        raise FileNotFoundError(
+            f"No .lammpstrj file found under input path(s): {roots}"
+        )
 
-    type_map = parse_type_map(args.type_map)
-    discovered_map = discover_type_map(input_path)
-    for k, v in discovered_map.items():
-        type_map.setdefault(k, v)
+    if args.output and len(traj_files) > 1:
+        raise ValueError("--output is only allowed when converting one trajectory.")
 
-    if os.path.exists(output):
-        os.remove(output)
-
-    count_in = 0
-    count_out = 0
-    warned_fallback = False
-    for atoms in iread(input_path, format="lammps-dump-text", index=":"):
-        if count_in % args.stride != 0:
-            count_in += 1
-            continue
-        if args.auto_complete_map:
-            still_missing = complete_type_map_from_elements(atoms, type_map)
-            if still_missing:
-                if args.strict_type_map:
-                    raise KeyError(
-                        "Atom types missing from --type-map and could not infer from trajectory "
-                        f"'element' data: {still_missing}. Provided keys: {sorted(type_map.keys())}"
-                    )
-                for t in still_missing:
-                    type_map[t] = args.fallback_symbol
-                if not warned_fallback:
-                    print(
-                        "Warning: some atom types could not be inferred from trajectory "
-                        f"'element' data and were mapped to '{args.fallback_symbol}'."
-                    )
-                    warned_fallback = True
-        map_symbols(atoms, type_map)
-        if args.wrap_atoms:
-            atoms.wrap()
-        write(output, atoms, format="extxyz", append=True)
-        count_in += 1
-        count_out += 1
-
-    if args.auto_complete_map:
-        print(f"Final type map used: {', '.join(f'{k}:{v}' for k, v in sorted(type_map.items()))}")
-
-    print(
-        f"Converted {count_out} frame(s) from '{input_path}' to '{output}' "
-        f"(read {count_in} total frame(s), stride={args.stride})."
-    )
+    for i, input_path in enumerate(traj_files):
+        if len(traj_files) == 1:
+            output = (
+                os.path.abspath(args.output)
+                if args.output
+                else os.path.abspath("trajectory.extxyz")
+            )
+        else:
+            output = default_output_path_for_trajectory(input_path)
+        if len(traj_files) > 1:
+            print(f"[{i + 1}/{len(traj_files)}] ", end="")
+        convert_trajectory(input_path, output, args)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ Entry points: ``plot_velocity_psd.py`` (PSD + cumulative ∫S only),
 
 By default the first **10,000** trajectory/ionic frames are excluded from all
 readers and from VACF, PSD, RDF, and MSD (VASP or LAMMPS). Use ``--all-frames``
-or ``--skip 0`` to analyze the full run as before.
+or ``--skip 0`` to analyze the full run as before. Use ``--skip-equil-15k`` for a
+fixed **15,000**-frame warmup discard (instead of the default skip).
 
 Reads extended-XYZ trajectories from one or more directories and
 plots the velocity power spectrum in **one matplotlib window**, grouped
@@ -50,6 +51,7 @@ Examples
     python analyze_md.py . /path/mlff_parent/   # DFT/300K vs MLFF/300K from VASP vs LAMMPS
     python analyze_md.py 300K/ 700K/ --skip 2000 --save comparison.png   # custom skip
     python analyze_md.py 300K/ --all-frames                             # use every frame (legacy)
+    python analyze_md.py 300K/ --skip-equil-15k --save plot.png           # discard first 15000 frames
     python analyze_md.py run/ --psd-fmax 1300 --save spectrum.png
 """
 
@@ -82,6 +84,18 @@ DEFAULT_PSD_TRIM_MARGIN = 0.01
 DEFAULT_PSD_SMOOTH = 15
 # Exclude early MD frames (equilibration / startup) from all readers and analysis by default.
 DEFAULT_EQUIL_SKIP_FRAMES = 10000
+# Optional heavier equilibration discard (CLI: --skip-equil-15k).
+EQUIL_SKIP_15K_FRAMES = 15000
+
+
+def resolve_equil_skip_frames(all_frames: bool, skip_equil_15k: bool, skip_n: int) -> int:
+    """Map mutually exclusive CLI equilibration flags to skip count."""
+    if all_frames:
+        return 0
+    if skip_equil_15k:
+        return EQUIL_SKIP_15K_FRAMES
+    return int(skip_n)
+
 
 ATOMIC_MASS = {
     "H": 1.008, "He": 4.002602, "Li": 6.94, "Be": 9.0121831, "B": 10.81,
@@ -1986,6 +2000,7 @@ Examples:
   %(prog)s .  /path/to/mlff_parent/   # DFT/300K vs MLFF/300K from VASP vs LAMMPS
   %(prog)s a/ b/ --series-prefixes VASP NEP   # override engine-based prefixes
   %(prog)s 300K/ 700K/ --skip 2000 --save plot.png   # override default skip ({DEFAULT_EQUIL_SKIP_FRAMES})
+  %(prog)s 300K/ --skip-equil-15k --save plot.png   # discard first {EQUIL_SKIP_15K_FRAMES} frames
   %(prog)s 300K/ --all-frames --save plot.png         # all frames (same as --skip 0)
   %(prog)s run/ --psd-fmax 1300 --save psd.png      # spectrum x-limit (cm⁻¹)
   %(prog)s dft/ mlff/ --data-log run.dat --no-plot   # data only, no figure
@@ -2004,18 +2019,26 @@ Examples:
         help="one legend prefix per DIR argument; forces PREFIX/<T> and "
              "overrides VASP→DFT / LAMMPS→MLFF detection",
     )
-    ap.add_argument(
+    _eq = ap.add_mutually_exclusive_group()
+    _eq.add_argument(
         "--skip",
         type=int,
         default=DEFAULT_EQUIL_SKIP_FRAMES,
         metavar="N",
         help="skip first N ionic/trajectory frames before analysis and plots "
-        f"(default: {DEFAULT_EQUIL_SKIP_FRAMES}; use --all-frames for N=0)",
+        f"(default: {DEFAULT_EQUIL_SKIP_FRAMES}; incompatible with "
+        "--all-frames/--skip-equil-15k)",
     )
-    ap.add_argument(
+    _eq.add_argument(
         "--all-frames",
         action="store_true",
         help="use the full trajectory (no equilibration skip; same as --skip 0)",
+    )
+    _eq.add_argument(
+        "--skip-equil-15k",
+        action="store_true",
+        help=f"skip first {EQUIL_SKIP_15K_FRAMES:,} trajectory frames "
+        "(heavier equilibration discard; incompatible with --skip/--all-frames)",
     )
     ap.add_argument("--max-frames", type=int, default=None,
                     help="max frames to read per directory")
@@ -2092,7 +2115,11 @@ Examples:
         help="skip matplotlib (no display, no --save file); use with --data-log for analysis only",
     )
     args = ap.parse_args()
-    skip_frames = 0 if args.all_frames else args.skip
+    skip_frames = resolve_equil_skip_frames(
+        args.all_frames,
+        args.skip_equil_15k,
+        args.skip,
+    )
 
     sim_dirs, origin_indices = resolve_dirs(args.dirs)
 
