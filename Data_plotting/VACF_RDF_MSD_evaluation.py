@@ -6,10 +6,8 @@ Entry points: ``plot_velocity_psd.py`` (PSD + cumulative ∫S only),
 ``plot_rdf_msd.py`` (RDF + MSD only), or this module’s ``main()`` for the
 **combined** figure (all panels).
 
-By default the first **10,000** trajectory/ionic frames are excluded from all
-readers and from VACF, PSD, RDF, and MSD (VASP or LAMMPS). Use ``--all-frames``
-or ``--skip 0`` to analyze the full run as before. Use ``--skip-equil-15k`` for a
-fixed **15,000**-frame warmup discard (instead of the default skip).
+The full trajectory is used for VACF, PSD, RDF, and MSD (no equilibration
+frame skipping).
 
 Reads extended-XYZ trajectories from one or more directories and
 plots the velocity power spectrum in **one matplotlib window**, grouped
@@ -49,9 +47,6 @@ Examples
     python VACF_RDF_MSD_evaluation.py 300K/
     python analyze_md.py dft/300K mlff/300K --labels "DFT" "MLFF"
     python analyze_md.py . /path/mlff_parent/   # DFT/300K vs MLFF/300K from VASP vs LAMMPS
-    python analyze_md.py 300K/ 700K/ --skip 2000 --save comparison.png   # custom skip
-    python analyze_md.py 300K/ --all-frames                             # use every frame (legacy)
-    python analyze_md.py 300K/ --skip-equil-15k --save plot.png           # discard first 15000 frames
     python analyze_md.py run/ --psd-fmax 1300 --save spectrum.png
 """
 
@@ -82,21 +77,6 @@ DEFAULT_PSD_TRIM_FRACTION = 0.92
 DEFAULT_PSD_TRIM_MARGIN = 0.01
 # Odd-length moving average (frequency bins) for PSD lines only; ∫S unchanged.
 DEFAULT_PSD_SMOOTH = 15
-# Exclude early MD frames (equilibration / startup) from all readers and analysis by default.
-DEFAULT_EQUIL_SKIP_FRAMES = 10000
-# Optional heavier equilibration discard (CLI: --skip-equil-15k).
-EQUIL_SKIP_15K_FRAMES = 15000
-
-
-def resolve_equil_skip_frames(all_frames: bool, skip_equil_15k: bool, skip_n: int) -> int:
-    """Map mutually exclusive CLI equilibration flags to skip count."""
-    if all_frames:
-        return 0
-    if skip_equil_15k:
-        return EQUIL_SKIP_15K_FRAMES
-    return int(skip_n)
-
-
 ATOMIC_MASS = {
     "H": 1.008, "He": 4.002602, "Li": 6.94, "Be": 9.0121831, "B": 10.81,
     "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998403163, "Ne": 20.1797,
@@ -1226,43 +1206,6 @@ def _draw_psd_temperature_subfig(
         )
 
 
-def _msd_t0_ps(R):
-    """Simulation time (ps) at first frame used for MSD, after equilibration skip."""
-    sk = int(R["meta"].get("skip_frames", 0))
-    if sk <= 0:
-        return 0.0
-    t0 = R["meta"].get("msd_trajectory_origin_ps")
-    if t0 is not None:
-        return float(t0)
-    dt_fs = float(R["meta"].get("dt_fs", 0.0))
-    return sk * dt_fs * 1e-3
-
-
-def _msd_plot_skip_note(results_list, labels):
-    """Short note when x-axis uses t₀ + τ (see _plot_rdf_msd_axes)."""
-    parts = []
-    for R, lab in zip(results_list, labels):
-        sk = int(R["meta"].get("skip_frames", 0))
-        if sk <= 0:
-            continue
-        t0 = _msd_t0_ps(R)
-        parts.append((lab, sk, t0))
-    if not parts:
-        return None
-    uniq = {(sk, round(t0, 12)) for _lb, sk, t0 in parts}
-    if len(uniq) == 1:
-        sk, t0 = parts[0][1], parts[0][2]
-        return (
-            f"x = t₀ + τ; t₀ ≈ {t0:g} ps is the first analyzed frame\n"
-            f"({sk:,} preceding frames skipped)."
-        )
-    lines = [
-        f"{lb}: t₀ ≈ {t0:g} ps (skip {sk:,})"
-        for lb, sk, t0 in parts
-    ]
-    return "x = t₀ + τ per series.\n" + "\n".join(lines)
-
-
 def _plot_rdf_msd_axes(
     ax_rdf,
     ax_msd,
@@ -1301,26 +1244,21 @@ def _plot_rdf_msd_axes(
 
     for i, (R, lab) in enumerate(zip(results_list, labels)):
         t_lag = R["msd_t"]
-        t0 = _msd_t0_ps(R)
         msd_map = R["msd"] if isinstance(R["msd"], dict) else {"total": R["msd"]}
         for ispec, (spec, m) in enumerate(sorted(msd_map.items())):
             tl, ms = t_lag, m
             if msd_tmax is not None:
                 cut = tl <= msd_tmax
                 tl, ms = tl[cut], ms[cut]
-            # x = t₀ + τ so the axis starts at the first analyzed simulation time (not 0)
-            t_plot = tl + t0
             lbl = f"{lab} ({spec})" if multi_dir else spec
             ax_msd.plot(
-                t_plot, ms,
+                tl, ms,
                 color=colors[i % 10], ls=ls_cycle[ispec % len(ls_cycle)],
                 label=lbl, lw=1.3,
             )
-    ax_msd.set_xlabel("t₀ + τ (ps)")
+    ax_msd.set_xlabel("τ (ps)")
     ax_msd.set_ylabel("MSD (Å²)")
     ax_msd.set_title("Mean square displacement")
-    note = _msd_plot_skip_note(results_list, labels)
-    # MSD legend upper left (RDF legend upper right); t₀/skip note sits just below legend
     handles, leg_labs = ax_msd.get_legend_handles_labels()
     n_leg = len(handles)
     if n_leg <= 3:
@@ -1329,7 +1267,7 @@ def _plot_rdf_msd_axes(
         ncol = 2
     else:
         ncol = 3
-    leg = ax_msd.legend(
+    ax_msd.legend(
         handles,
         leg_labs,
         fontsize=6.5,
@@ -1341,31 +1279,6 @@ def _plot_rdf_msd_axes(
         handletextpad=0.5,
         handlelength=1.8,
     )
-    if note is not None:
-        fig = ax_msd.figure
-        fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
-        bbox_ax = leg.get_window_extent(renderer).transformed(
-            ax_msd.transAxes.inverted()
-        )
-        gap = 0.012
-        ax_msd.text(
-            bbox_ax.x0,
-            bbox_ax.y0 - gap,
-            note,
-            transform=ax_msd.transAxes,
-            fontsize=6.2,
-            va="top",
-            ha="left",
-            color="0.25",
-            linespacing=1.15,
-            bbox=dict(
-                boxstyle="round,pad=0.35",
-                facecolor="0.97",
-                edgecolor="0.82",
-                lw=0.6,
-            ),
-        )
     ax_msd.xaxis.set_minor_locator(AutoMinorLocator())
 
 
@@ -1601,7 +1514,6 @@ def analyze_one(directory, skip, max_frames,
             f"No trajectory (OUTCAR / *.xyz / *.extxyz / XDATCAR) in {d}\n"
             "  Check that the directory contains simulation output.")
     print(f"  Trajectory: {Path(traj_path).name}  ({traj_fmt})")
-    print(f"  Equilibration: skip first {skip} frame(s) (VASP/LAMMPS)")
 
     readers = {
         "outcar": read_outcar,
@@ -1639,17 +1551,10 @@ def analyze_one(directory, skip, max_frames,
         else:
             raise
     nf = len(pos)
-    if nf == 0 and skip > 0:
-        print(
-            f"  No frames left after skip={skip}; retrying this run with skip=0",
-            flush=True,
-        )
-        pos, cells, species, vel = reader(traj_path, skip=0, max_frames=max_frames)
-        nf = len(pos)
     if nf == 0:
         raise ValueError(
             f"No readable frames found in trajectory {traj_path} "
-            f"(after trying skip={skip} and skip=0)."
+            f"(skip={skip})."
         )
     u, c = np.unique(species, return_counts=True)
     print(f"  Species: {', '.join(f'{s}({n})' for s, n in zip(u, c))}")
@@ -1749,9 +1654,6 @@ def analyze_one(directory, skip, max_frames,
         "n_frames": int(nf),
         "n_atoms": int(pos.shape[1]),
         "msd_source": msd_source,
-        "skip_frames": int(skip),
-        # Simulation time (ps) at the first frame kept for analysis (after equilibration skip).
-        "msd_trajectory_origin_ps": float(skip) * float(dt) * 1e-3,
         "species": sorted(set(species)),
         "velocity_m_per_s_per_unit": vel_to_m_s,
         "nominal_temperature_K": nominal_T,
@@ -1872,8 +1774,6 @@ def write_data_log(out_path, sim_dirs, labels, all_results):
                     "n_frames",
                     "n_atoms",
                     "msd_source",
-                    "skip_frames",
-                    "msd_trajectory_origin_ps",
                     "velocity_m_per_s_per_unit",
                     "nominal_temperature_K",
                     "T_kin_from_vacf0_K",
@@ -1912,7 +1812,7 @@ def write_data_log(out_path, sim_dirs, labels, all_results):
                 for spec in sorted(R["msd"].keys()):
                     fh.write(
                         f"# --- MSD species={spec!r}: columns tau_lag_ps, MSD_Angstrom^2 "
-                        f"(τ = lag; meta.msd_trajectory_origin_ps = sim. time at 1st frame) ---\n"
+                        "(full trajectory; no equilibration time offset) ---\n"
                     )
                     np.savetxt(
                         fh,
@@ -1923,7 +1823,7 @@ def write_data_log(out_path, sim_dirs, labels, all_results):
             else:
                 fh.write(
                     "# --- MSD: columns tau_lag_ps, MSD_Angstrom^2 "
-                    "(τ = lag; see meta.msd_trajectory_origin_ps) ---\n"
+                    "(full trajectory; no equilibration time offset) ---\n"
                 )
                 np.savetxt(
                     fh,
@@ -1999,9 +1899,6 @@ Examples:
   %(prog)s dft/300K mlff/300K --labels "DFT" "MLFF"
   %(prog)s .  /path/to/mlff_parent/   # DFT/300K vs MLFF/300K from VASP vs LAMMPS
   %(prog)s a/ b/ --series-prefixes VASP NEP   # override engine-based prefixes
-  %(prog)s 300K/ 700K/ --skip 2000 --save plot.png   # override default skip ({DEFAULT_EQUIL_SKIP_FRAMES})
-  %(prog)s 300K/ --skip-equil-15k --save plot.png   # discard first {EQUIL_SKIP_15K_FRAMES} frames
-  %(prog)s 300K/ --all-frames --save plot.png         # all frames (same as --skip 0)
   %(prog)s run/ --psd-fmax 1300 --save psd.png      # spectrum x-limit (cm⁻¹)
   %(prog)s dft/ mlff/ --data-log run.dat --no-plot   # data only, no figure
   %(prog)s ~/vasp/oms6/md/ ~/lammps/oms6/            # VASP (XDATCAR) vs MLFF (extxyz)
@@ -2018,27 +1915,6 @@ Examples:
         metavar="PREFIX",
         help="one legend prefix per DIR argument; forces PREFIX/<T> and "
              "overrides VASP→DFT / LAMMPS→MLFF detection",
-    )
-    _eq = ap.add_mutually_exclusive_group()
-    _eq.add_argument(
-        "--skip",
-        type=int,
-        default=DEFAULT_EQUIL_SKIP_FRAMES,
-        metavar="N",
-        help="skip first N ionic/trajectory frames before analysis and plots "
-        f"(default: {DEFAULT_EQUIL_SKIP_FRAMES}; incompatible with "
-        "--all-frames/--skip-equil-15k)",
-    )
-    _eq.add_argument(
-        "--all-frames",
-        action="store_true",
-        help="use the full trajectory (no equilibration skip; same as --skip 0)",
-    )
-    _eq.add_argument(
-        "--skip-equil-15k",
-        action="store_true",
-        help=f"skip first {EQUIL_SKIP_15K_FRAMES:,} trajectory frames "
-        "(heavier equilibration discard; incompatible with --skip/--all-frames)",
     )
     ap.add_argument("--max-frames", type=int, default=None,
                     help="max frames to read per directory")
@@ -2115,11 +1991,7 @@ Examples:
         help="skip matplotlib (no display, no --save file); use with --data-log for analysis only",
     )
     args = ap.parse_args()
-    skip_frames = resolve_equil_skip_frames(
-        args.all_frames,
-        args.skip_equil_15k,
-        args.skip,
-    )
+    skip_frames = 0
 
     sim_dirs, origin_indices = resolve_dirs(args.dirs)
 
